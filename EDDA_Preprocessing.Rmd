@@ -1,0 +1,296 @@
+EDDA 450K Data Preprocessing 
+========================================================
+## Author: Sumaiya Islam
+## Date: November 10, 2015
+
+### A. Set up wd & packages
+
+Use R version 3.1.1 (2014-07-10)
+
+We will initially set our working directory and load our libraries.
+```{r EDDA_setup, include = FALSE, echo=FALSE}
+setwd("/home/sislam/EDDA")
+library(methylumi)
+library(gplots)
+library(marray)
+library(lumi)
+library(lattice)
+library("RColorBrewer")
+library(knitr)
+library(xtable)
+```
+
+The **methylumi** package is a great tool for loading and analysing the Illumina 450K methylation data. It is built to contain sample information, feature information, and multiple matrices of data (beta and transformed M-values) along with background correction and quality control features.
+
+The **lumi** package is also important for processing Illumina 27K and 450K methylation microarray data. 
+
+### B. Load files
+
+Four files are required for our analysis:
+- **sampleFile** contains all the sample information and variables. It can be produced in Excel. The variables contained in our study include tissue, sex, age of onset, Sentrix ID (chip barcode) and Sentrix Position (row and column position on the chip), etc. The sampleFile must contain a "SampleID" column which is the same as sample ID, except without "rep" for replicates in order to utilize the methylumi and lumi packages.
+- **allFile** is generated in GenomeStudio.  It contains all probe annotation information (both Illumina's and reannotation file produced in Price et al. 2013 *Epigenetics*), and the following subcolumns for all samples: average beta, detection Pval, signal A, and signal B
+- **betaFile** is generated in GenomeStudio.  It contains all probe annotation information, and all samples with only the average beta subcolumn.
+- **qcFile** is generated in GenomeStudio (under the Control Probes profile).  It shows all samples (i.e. all columns), plus subcolumns: signal Grn, signal Red, and detection Pval.
+
+### Note: Quality control steps for colour correction and background subtraction have been performed in GenomeStudio using invariant control probes. The corrected data were exported in the above-mentioned files. 
+
+```{r EDDA_fileLoad, echo=FALSE}
+# sampleFile <- ("EDDA_study_samplesheet_revised.txt") 
+# allFile <- ("EDDA study_alldata.txt") 
+# betaFile <- ("EDDA_study_avgbeta.txt") 
+# qcFile <- ("EDDA_study_qcfile.txt") 
+# 
+# file.exists(allFile)
+# file.exists(betaFile)
+# file.exists(qcFile)
+# file.exists(sampleFile)
+```
+
+Next, we'll make the EDDA project (and EDDA.2):
+
+```{r EDDA_project, echo=FALSE}
+# EDDA<- lumiMethyR(allFile)
+# EDDA.2 <- methylumiR(betaFile, qcfile = qcFile)
+# 
+# 
+# EDDA # probes = 485,577, n = 72
+# EDDA.2 # probes = 485,577, n = 72
+```
+
+The function *lumiMethyR()* coerces the object (**allFile**) into a **MethyLumiM class object**, which contains those four elements (exprs, methylated, unmethylated, and detection p value).
+
+The function *methylumiR()* coerces the object (**betaFile**) into a **MethyLumiSet class object**, which holds the intensities and the beta values.  This is also where the sample information (the sampleFile) can be added as phenoData.
+EDDA.2 contains the information from the control probes, as well as the average beta values for all probes.
+
+### C. Add metadata to EDDA
+
+```{r EDDA_metadata, echo=FALSE}
+# str(sampleInfo <- read.delim(sampleFile,row.names=1,stringsAsFactors=F))
+# stopifnot(all(sampleNames(EDDA)%in%rownames(sampleInfo)))
+# sampleInfo <- sampleInfo[sampleNames(EDDA),]
+# str(pData(EDDA) <- sampleInfo)
+# pData(EDDA)$Sample_Group<-as.factor(pData(EDDA)$Sample_Group)
+# pData(EDDA)$nationality<-as.factor(pData(EDDA)$nationality)
+# str(pData(EDDA))
+```
+
+First, we've read the sampleFile and made it into a matrix.  The first row of sampleFile becomes the row names of sampleInfo.  The **stringsAsFactors** argument specifies whether R should keep character variables as they are (= FALSE), or to convert them to factors (= TRUE).
+
+We then perform a sanity check to ensure all EDDA sample names are equivalent to sampleInfo row names.
+Next, the sampleInfo is reordered to match the sample names of EDDA. This is important because we are merging sampleInfo and EDDA: sampleInfo becomes EDDA's pData (or phenoData, i.e. the phenotypic information about samples in EDDA)
+
+```{r EDDA_metadata2, echo=FALSE}
+# EDDA <- EDDA[, order(EDDA$Sentrix_ID)]
+# write.csv(cor(betas(EDDA), use = 'pairwise.complete.obs'), file='C.01 - all sample intercorrelation.csv')
+```
+
+We chose to re-order EDDA by Sentrix ID (array chip barcode number), but this could be done for other variables.
+
+### D. Saving EDDA and EDDA.2
+```{r EDDA_save, echo=FALSE}
+ # save (EDDA, file ='EDDA.RData')
+ # save (EDDA.2, file ='EDDA.2.RData')
+load("EDDA.RData")
+load("EDDA.2.RData")
+```
+
+### E. Preliminary plotting and exploratory analysis
+
+We will generate some preliminary exploratory plots of the data to check for possible outliers or batch effects.
+
+First we plot the sample relations based on MDS (multidimensional scaling) in order to visually investigate the data. We initially color the data according to Sentrix ID in order to assess possible batch effects. We then do a similar assessment, coloring the samples by Sample_Group (which is are the control, patient, patient_t2 groups) to investigate any obvious differences from our main variable of interest:
+
+```{r EDDA_sentrixMDS, fig.width=8, fig.height=7, echo=FALSE}
+par(cex = 0.7)
+plotSampleRelation (EDDA, method = "mds", col = as.character (as.numeric (factor (EDDA$Sentrix_ID))))
+legend ("top", legend = levels (factor (EDDA$Sentrix_ID)), fill = 1:nlevels (factor (EDDA$Sentrix_ID)), horiz = T)
+```
+
+We can see that samples scatter relatively randomly in the MDS plot according to Sentrix ID (representing the chip number). This means that are likely few chip-to-chip effects. 
+
+
+```{r EDDA_tissue, fig.width=8, fig.height=7, echo=FALSE}
+groupCol <- as.numeric(factor(EDDA$Sample_Group))
+groupCol <- gsub("1", "orange",  gsub("2", "blue", gsub("3", "green", groupCol)))
+
+par(cex = 0.7)
+plotSampleRelation(EDDA, method = "mds", col = groupCol)
+legend("top", legend = c("Control", "Patient", "Patient_t2"),fill = c("orange","blue", "green"), horiz = T)
+```
+
+The does not appear to be any discernible groupings driven by patient/control status in the global DNA methylation profiles. 
+
+
+
+
+We also produce a dendogram of the samples as another way to visualize the global DNA methylation patterns. 
+
+```{r EDDA_rawCluster, fig.width=8, fig.height=7, echo=FALSE}
+par(cex = 0.7)
+plotSampleRelation(EDDA, method = "cluster")
+```
+
+Do not observe any readily observable clustering pattern in the global DNA methylation profiles of the data before pre-processing. 
+
+```{r EDDA_preprocessHeatmap, fig.width=8, fig.height=7, echo=FALSE}
+groupCol <- as.numeric(factor(EDDA$Sample_Group))
+groupCol <- gsub("1", "orange",  gsub("2", "blue", gsub("3", "green", groupCol)))
+sentrixCol = as.character (as.numeric (factor (EDDA$Sentrix_ID)))
+
+BuPu <- colorRampPalette(brewer.pal(n = 9, "BuPu"))
+
+cor <- cor(betas(EDDA), use = "pairwise.complete.obs")
+
+heatmap.2(cor,main = "Correlation of samples - 485,577 probes",
+          trace = "none", col = BuPu, dendrogram = "both",
+          RowSideColors = sentrixCol, cexRow = 1,
+          ColSideColors = groupCol, cexCol = 1,
+          keysize = 1)
+legend("topright", legend = c("Control", "Patient", "Patient_t2"),fill = c("orange","blue", "green"), horiz = T)
+```
+Again, no discernible clusting based on patient/control status. Also do not see any clustering by Sentrix ID (chip number) indicating limited chip-to-chip effects. 
+
+
+### F. Probe Filtering
+
+##### Removal of SNP Probes
+
+Here we create a sub-project, **EDDA.rs**, containing only information for the probes that are on single-nucleotide polymorphisms (SNPs (n = 65)).  We then remove these probes from **EDDA**. We remove the SNP probes as they are used as an internal control to ensure your samples are what you think they are and are not used for any methylation analysis.
+
+```{r EDDA_SNPprobes, echo=FALSE}
+EDDA.rs <- EDDA[substring(featureNames(EDDA), 1, 2) == "rs", ] 
+dim(EDDA.rs) # SNP probes = 65, n = 18
+EDDA <- EDDA[substring(featureNames(EDDA),1,2) != "rs", ]
+dim(EDDA) # probes = 485,512, n = 72
+# save(EDDA, file = "EDDA(noRS).RData") 
+# save(EDDA.rs, file = "EDDA(RS).RData")
+```
+
+This cluster plot observes the samples based on the 65 SNP probes alone (i.e. uses the EDDA.rs project)
+
+```{r EDDA_SNPprobesPlot, fig.width=12, fig.height=10, echo=FALSE}
+plotSampleRelation(EDDA.rs,method="cluster", cex=0.7)
+```
+
+We see that the 24 matched patient samples (taken at t1 (pre-treatment) and t2 (post-treatment)) cluster beside each other according to the 65 SNP profile. This is expected since these represent samples taken from the same individual. However, we can see that two control samples (EDDA_59 and EDDA_70) are equally similar according to their SNP profile. This likely means that these samples are actually DNA replicates from the same individual (ie same DNA was submitted twice for array analysis). So this means that these two samples actually represent two technical replicates. Note that this also means there are really n = 23 unique control samples instead of n = 24. 
+
+##### XY Probes
+
+We shall look specifically probes located on the X and Y chromosomes.  The mini project **EDDA.xy** will contain only 11,648 probes. Note that since all samples in this study were males, we will not be removing any of the XY probes. 
+
+
+```{r EDDA_XYprobes, echo=FALSE}
+EDDA.xy <- EDDA[fData(EDDA)$CHR%in%c("X", "Y"), ]
+dim(EDDA.xy) # probes = 11,648, n = 72
+# save(EDDA, file = "EDDA(noXY).RData")
+# save(EDDA.xy, file = "EDDA(XY).RData")
+```
+
+We will assess how the samples cluster by their XY probes. 
+```{r EDDA_SNPXYprobesCluster, fig.width=8, fig.height=7, echo=FALSE}
+par(cex = 0.7)
+plotSampleRelation(EDDA.xy, method = "cluster")
+```
+Oddly, we note that two samples (EDDA_97 and EDDA_28) cluster separately from the rest of the samples based on their XY probe profiles. Need to ask Christoff to look more closely at these samples. 
+
+
+### G. Filtering out "bad" probes
+
+First, let's do some checks between EDDA and EDDA.2 to ensure that all the data is matched between these objects since some of the data we'll used to filter EDDA comes from EDDA.2.
+
+Are all of the probes (called with *featureNames()*) in EDDA also in EDDA.2?  Are all of the samples in EDDA (called with *sampleNames()*) also in EDDA.2?
+
+```{r EDDA_projectChecks, echo=FALSE}
+all(featureNames(EDDA)%in%featureNames(EDDA.2))
+all(sampleNames(EDDA)%in%sampleNames(EDDA.2))
+```
+
+The answer to both questions is yes.
+
+##### Missing beta values
+
+We are looking for probes where there was no average beta value (the measure of methylation) calculated by GenomeStudio. This is done when GenomeStudio detects intensity values from less than three beads for a given probe.  
+**avgbeta** is a matrix of the beta values for each sample at each probe. 
+**badAvgbeta** is a logical matrix that shows which probes have NAs for which samples.
+From this we make **nbadAvgbeta**, which sums up the number of "TRUE"'s for each row.  Our threshold is 1 badAvgbeta for a probe to be removed.
+
+```{r EDDA_badAvgbeta, fig.width=8, fig.height=7, echo=FALSE}
+avgbeta <- betas(EDDA.2)[featureNames(EDDA),sampleNames(EDDA)]
+badAvgbeta <- is.na(avgbeta)
+nbadAvgbeta <- print(sum(rowSums(badAvgbeta)>=1))  #11975
+
+dotchart(colSums(badAvgbeta), cex=0.8, main = paste("Bad Avg Beta probes"))
+```
+
+This dot chart is shows how many probes are defined as having a "bad average beta value" by the threshold we specified above. As a general rule of thumb a sample has to have more than 10% (40,000) of probes deemed "bad" before it is considered for removal. Our worst sample has only ~1000 probes with a bad average beta value. Here we have identified 11702 probes with a bad average beta value using thresholds defined above. 
+
+##### Bad detection p-values
+
+**Detection p-values:** the confidence that the signal from the probe in question is more than the background (as defined by the negative control probes on the Illumina array).  We set our p-value threshold to 0.01.
+
+First, we make the object **badDetP**, which is a logical matrix that lets you know which probes do not meet our p-value requirements for which samples (i.e. it is a 473,684 by 72 matrix).
+From this we make **nbadDetP**, which sums up the number of "TRUE"'s in each row (i.e. for each probe).  We have set a threshold of 1 badDetP (detection p-value >= 0.01) to label a probe as a "bad" probe - this means that any one probe had to not meet our p-value threshold for at least 1 of our 72 samples to be targeted for removal.
+
+```{r EDDA_badDetP, fig.width=8, fig.height=7, echo=FALSE}
+badDetP <- detection(EDDA)>0.01
+nbadDetP <- print(sum(rowSums(badDetP)>=1)) #2407
+
+dotchart(colSums(badDetP),main=paste("Bad Det P-value probes"), cex = 0.4)
+```
+
+As stated above a sample has to contain about 10% of bad probes to consider removing it. Our worst sample has only ~350. Here we have identified 2322 probes which have a bad detection P-value using thresholds defined above.
+
+
+##### Removing these bad probes
+
+```{r EDDA_probeRemoval, echo=FALSE}
+badProbes <- rowSums(badAvgbeta)>=1|rowSums(badDetP)>=1
+sum(badProbes)# badProbes = 13903
+EDDA <- EDDA[!badProbes,] 
+dim(EDDA) # probes = 471609, n = 72
+# save (EDDA, file= 'EDDA(filtered).RData')
+```
+
+We then take out all probes identified above as having either a bad detection P-value or a bad average beta value or both. In total we have removed 13903 "bad" probes from our study. 11975 (badAvgbeta) + 2407 (badDetP) = 14382 yet we removed only 13903. This is because there were some probes identified which overlapped as having both bad average beta values and bad detection P-values. We have a total of 471,609 probes left in our analysis.
+
+##### Cross-hybridizing probes
+
+Some probes have been found to cross-hybridize with other chromosomes (Price et al. 2013 *Epigenetics*).  It is at the discretion of the user whether or not they want to remove these cross-hybridizing probes, since it isn't a guarantee that they will cross-hybridize every time the experiment is run.  Note that in this case, the cross-hybridizing probes have NOT been romoved. 
+
+**snp_index** is a list of which probes do not contain SNPs. It is derived from fData(EDDA)$n_SNPCpG, which is a matrix of how many SNPs are possible for that probe; if there's an NA that is good, because that means there's no SNP in that probe.  We then filter EDDA, taking only the probes that were listed in **snp index**. We also remove probes which bind multiple locations in the genome as long as one of the locations is on the XY chromosome. The reason for this is as the X and Y chromosomes are not balanced amongst our samples (males vs females) we have to remove all probes which bind them so as to not skew the normalization. We do not remove multiple binders of probes which bind at various sites only in the autosomal chromosomal regions because they will most likely not skew our normalization and when we obtain our "hit list" we will verify them using pyrosequencing in order to determine if the specific site of interest is providing the signal we are seeing.
+
+```{r EDDA_xHybrid, echo=FALSE}
+snp_index <- which(is.na(fData(EDDA)$n_SNPCpG))
+(n.polymorphic.probes<-(length(featureNames(EDDA))-length(snp_index))) #19343
+EDDA <- EDDA[snp_index, ] 
+dim(EDDA) # probes = 452,266, n = 72
+# save(EDDA, file = "EDDA(filtered).RData")
+```
+
+We have removed 19,343 polymorphic probes. This leaves us with 452,266 probes for our analysis.
+
+
+```{r EDDA_tissueMDS, fig.width=8, fig.height=7, echo=FALSE}
+groupCol <- as.numeric(factor(EDDA$Sample_Group))
+groupCol <- gsub("1", "orange",  gsub("2", "blue", gsub("3", "green", groupCol)))
+
+par(cex = 0.7)
+plotSampleRelation(EDDA, method = "mds", col = groupCol)
+legend("top", legend = c("Control", "Patient", "Patient_t2"),fill = c("orange","blue", "green"), horiz = T)
+```
+ Again, do not see any discernible grouping by patient status (patient/control) in the filtered DNA methylation data. 
+
+### Summary table of probe/sample filtering processes:
+Here is a table summarizing our probe filtering and pre-processing steps undertaken so far:
+
+```{r echo=FALSE}
+Filtered <- matrix(c("485,577", "72","Starting Probes", "485,512", "72","SNP Probes (65)", "471,609", "72","Bad Probes (13,903)", "452,266", "72","Polymorphic Probes (19,343)", "452,266", "72", "Final Filtered Dataset"),ncol=3,byrow=TRUE)
+colnames(Filtered) <- c("Probes","Samples","Filtering")
+Filtered <- as.table(Filtered)
+```
+
+```{r results='asis', echo=FALSE}
+print(xtable(Filtered, align=c("llcr")), type="html")
+```
+
+We will continue with the normalization process using the objects EDDA.RData and EDDA.2.RData

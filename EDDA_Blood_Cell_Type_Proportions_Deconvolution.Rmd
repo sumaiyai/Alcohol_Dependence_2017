@@ -1,0 +1,380 @@
+EDDA Blood Cell Deconvolution
+========================================================
+  ## By: Sumaiya Islam
+  ## Date Updated: February 15, 2016
+  
+  ### Script contents:
+  - use blood deconvolution algorithm (from minfi package) to predict blood cell type proportions 
+  - check predicted cell type proportions (since this project has purified CD3+ T-cells, expect null proportions for all other blood cell types except T-lymphocytes)
+  - regress out blood cell type heterogeneity from original methylation profiles
+  - check corrected methylation profiles by PCA
+ 
+   
+### A. Set up working directory & packages
+
+We will initially set our working directory and load our libraries.
+
+```{r,include=FALSE}
+library(methylumi)
+library(limma)
+library(sva)
+library(minfi)
+library(FlowSorted.Blood.450k)
+library(IlluminaHumanMethylation450kmanifest)
+library(quadprog)
+```
+
+### B. Load files
+
+#### According to Chris Brueckmann (collaborator), for the DNA isolation, "we used CD3 Dynabeads (https://www.thermofisher.com/order/catalog/product/11151D) according to standard protocol for positive isolation: collected PBMCs are washed once, then transferred on 100µl prewashed Dynabeads. We keep this mixture rotating for 30min at 4°C. Afterwards, the beads are washed 3 times in Buffer (PBS pH 7,4, 0,1% BSA, 1mM EDTA). After this step, every CD3 neg. cell should be depleted. We lyse the cells directly from the beads and continue with the standard DNA extraction protocol.""
+
+```{r}
+load("EDDA.combat.RData") # Combat-corrected data
+# check for NAs in data
+ind<-is.row.na(betas(EDDA.combat)) # The function returns a vector of logical variables, one for each row of the matrix. The variable is TRUE if the row does not contain any missing values and FAlSE otherwise.
+length(na.count<-which(ind=="FALSE")) # 0 (there are no rows that contain a NA in the raw data)
+```
+
+### C. Blood Deconvolution to predict blood cell type proportions
+
+#### We will be using the blood deconvolution method from Koestler et al. 2013.  Blood based patterns of DNA methylation predict the underlying distribution of cell types: a validation analysis.  Epigenetics, 8(8), 816-26.  PMID: 23903776.
+
+```{r}
+# run source script for blood deconvolution (adapted from minifi package and passed down from Meg)
+source("ECC2.R")
+RGset = as.data.frame(betas(EDDA.combat))
+cellprop <- ECC2(RGset) # this takes a while so best to run overnight
+
+# check results of deconvolution
+head(cellprop$counts)
+diff<-as.data.frame(cellprop$counts)
+# save(diff, file = "EDDA_Deconvoluted_Predicted_Cell_Proportions.RData")
+
+load("EDDA_Deconvoluted_Predicted_Cell_Proportions.RData")
+# integrate predicted cell proportions with existing meta data 
+identical(rownames(diff), rownames(pData(EDDA.combat))) # TRUE
+meta.cell<-cbind(pData(EDDA.combat)$Sample_Group, diff)
+meta.cell$Sample<-rownames(meta.cell)
+str(meta.cell)
+head(melted.diff<-melt(meta.cell))
+# plot predicted proportions of each cell type, coloured by sample_group
+colnames(melted.diff)<-c("Group", "Sample", "Cell.Type", "Predicted.Proportion")
+
+melted.diff$Group<-as.factor(melted.diff$Group)
+
+
+ggplot(melted.diff, aes(Group, Predicted.Proportion)) + geom_boxplot(aes(fill=Group),color="black", outlier.shape=NA)+ geom_point(shape=21, fill="grey",colour="black", size=2, position=position_jitter(w=0.2)) + scale_fill_manual(values=c("#d6604d","#4393c3", "#92c5de")) + theme_bw() +facet_wrap(~Cell.Type) + xlab("Sample Group") + ylab("Predicted Cell Proportions")
+```
+
+We can see that there is notable contamination of the T-lymphocyte samples with NK cells. We will test if the cell type proportions associate with sample group. 
+
+#### Comparison of cell type proportions between controls and T1 patient samples
+
+```{r, echo=FALSE}
+# subset controls and patient T1 samples
+all.dat<-EDDA.combat
+pData(all.dat)$Sample_Group<-as.character(pData(all.dat)$Sample_Group)
+pData(all.dat)$Sample_Group<-gsub("patient_t2", "t2", all.dat$Sample_Group)
+toMatch<-c("control", "patient")
+con.t1.samples <- grep(paste(toMatch,collapse="|"),all.dat$Sample_Group)
+Con_T1_subset<-all.dat[,con.t1.samples]
+meta.CT1<-pData(Con_T1_subset)
+diff.CT1<-diff[which(rownames(diff)%in%rownames(meta.CT1)),]
+identical(rownames(diff.CT1), rownames(meta.CT1)) #TRUE 
+meta.CT1.diff<-cbind(meta.CT1$Sample_Group, diff.CT1)
+colnames(meta.CT1.diff)<-c("Group", "CD8T", "CD4T", "NK", "Bcell", "Mono", "Gran")
+head(melted.diff.CT1<-melt(meta.CT1.diff))
+colnames(melted.diff.CT1)<-c("Group", "Cell.Type", "Predicted.Proportion")
+melted.diff.CT1$Group<-as.factor(melted.diff.CT1$Group)
+ggplot(melted.diff.CT1, aes(Group, Predicted.Proportion)) + geom_point(aes(colour=Group), size=3,shape=19, position=position_jitter(w=0.2)) + scale_colour_manual(values=c("#ef8a62","#998ec3", "#5ab4ac")) + theme_bw() +facet_wrap(~Cell.Type)
+# test difference between groups to see if there is a significant difference in cell type proportion between controls and T1 patient (Mann-Whitney U test)
+mw.test.CD8T<-wilcox.test(meta.CT1.diff[which(meta.CT1.diff$Group=="control"), "CD8T"],meta.CT1.diff[which(meta.CT1.diff$Group=="patient"), "CD8T"])
+mw.test.CD4T<-wilcox.test(meta.CT1.diff[which(meta.CT1.diff$Group=="control"), "CD4T"],meta.CT1.diff[which(meta.CT1.diff$Group=="patient"), "CD4T"])
+mw.test.NK<-wilcox.test(meta.CT1.diff[which(meta.CT1.diff$Group=="control"), "NK"],meta.CT1.diff[which(meta.CT1.diff$Group=="patient"), "NK"])
+mw.test.Bcell<-wilcox.test(meta.CT1.diff[which(meta.CT1.diff$Group=="control"), "Bcell"],meta.CT1.diff[which(meta.CT1.diff$Group=="patient"), "Bcell"])
+mw.test.Mono<-wilcox.test(meta.CT1.diff[which(meta.CT1.diff$Group=="control"), "Mono"],meta.CT1.diff[which(meta.CT1.diff$Group=="patient"), "Mono"])
+mw.test.Gran<-wilcox.test(meta.CT1.diff[which(meta.CT1.diff$Group=="control"), "Gran"],meta.CT1.diff[which(meta.CT1.diff$Group=="patient"), "Gran"])
+# multiple test correction
+p.vals<-c(mw.test.CD8T$p.value, mw.test.CD4T$p.value, mw.test.NK$p.value, mw.test.Bcell$p.value, mw.test.Mono$p.value, mw.test.Gran$p.value)
+CT1.test.output<-as.matrix(adjusted.pvals.CT1<-p.adjust(p.vals, method="BH"))
+rownames(CT1.test.output)<-c("CD8T", "CD4T", "NK", "Bcell", "Mono", "Gran")
+colnames(CT1.test.output)<-"adjusted.pval"
+CT1.test.output
+```
+
+There seems to be a statistically different proportions of granulocytes between control and T1 patient samples (adjusted p-value < 0.05)---however, that may be due to the low overall variability in granulocyte proportions (note that a warning was provided saying cannot compute p-values with ties).
+
+#### Comparison of cell type proportions between T1 and T2 patient samples
+```{r, echo=FALSE}
+# subset data to just T1 vs T2 patient samples
+toMatch2<-c("patient", "t2")
+tt.samples <- grep(paste(toMatch2,collapse="|"),all.dat$Sample_Group)
+tt_subset<-all.dat[,tt.samples]
+meta.tt<-pData(tt_subset)
+meta.tt$Sample_Group<-as.factor(as.character(meta.tt$Sample_Group))
+meta.tt$Sample_Name<-colnames(exprs(tt_subset))
+meta.tt$Patient_ID<-c("69", "66", "103", "67", "89", "84", "120", "47", "85", "47", "49", "123", "31", "31", "107", "122", "87", "67", "123", "87", "103", "69", "61", "83", "66", "49", "104", "121", "61", "121", "107", "64","83", "104", "100", "105", "82", "82", "105", "68", "100", "89", "84", "68", "120", "85", "64", "122")
+meta.tt$Patient_ID<-as.factor(meta.tt$Patient_ID)
+
+# combine meta data with predicted cell proportions
+diff.tt<-diff[which(rownames(diff)%in%rownames(meta.tt)),]
+identical(rownames(diff.tt), rownames(meta.tt)) #TRUE 
+meta.tt.diff<-cbind(meta.tt$Sample_Group,meta.tt$Patient_ID, diff.tt)
+colnames(meta.tt.diff)<-c("Group", "Patient.ID","CD8T", "CD4T", "NK", "Bcell", "Mono", "Gran")
+head(melted.diff.tt<-melt(meta.tt.diff))
+colnames(melted.diff.tt)<-c("Group", "Patient.ID", "Cell.Type", "Predicted.Proportion")
+melted.diff.tt$Group<-as.factor(melted.diff.tt$Group)
+# plot predicted proportions for each cell type by group
+ggplot(melted.diff.tt, aes(Group, Predicted.Proportion)) + geom_point(aes(colour=Group), size=3,shape=19, position=position_jitter(w=0.2)) + scale_colour_manual(values=c("#66c2a5","#fc8d62")) + theme_bw() +facet_wrap(~Cell.Type)
+# test difference between groups to see if there is a significant difference in cell type proportion between T1 and T2 patient (Wilcoxon signed rank test)
+meta.T1.diff<-meta.tt.diff[which(meta.tt.diff$Group=="patient"),]
+meta.T2.diff<-meta.tt.diff[which(meta.tt.diff$Group=="t2"),]
+meta.T2.diff.order<-meta.T2.diff[match(meta.T1.diff$Patient.ID, meta.T2.diff$Patient.ID),]
+identical(meta.T1.diff$Patient.ID, meta.T2.diff.order$Patient.ID)
+mw.test.CD8T<-wilcox.test(meta.T1.diff$CD8T, meta.T2.diff.order$CD8T, paired=TRUE)
+mw.test.CD4T<-wilcox.test(meta.T1.diff$CD4T, meta.T2.diff.order$CD4T, paired=TRUE)
+mw.test.NK<-wilcox.test(meta.T1.diff$NK, meta.T2.diff.order$NK, paired=TRUE)
+mw.test.Bcell<-wilcox.test(meta.T1.diff$Bcell, meta.T2.diff.order$Bcell, paired=TRUE)
+mw.test.Mono<-wilcox.test(meta.T1.diff$Mono, meta.T2.diff.order$Mono, paired=TRUE)
+mw.test.Gran<-wilcox.test(meta.T1.diff$Gran, meta.T2.diff.order$Gran, paired=TRUE)
+p.vals<-c(mw.test.CD8T$p.value, mw.test.CD4T$p.value, mw.test.NK$p.value, mw.test.Bcell$p.value, mw.test.Mono$p.value, mw.test.Gran$p.value)
+# multiple test correction
+tt.test.output<-as.matrix(adjusted.pvals.tt<-p.adjust(p.vals, method="BH"))
+rownames(tt.test.output)<-c("CD8T", "CD4T", "NK", "Bcell", "Mono", "Gran")
+colnames(tt.test.output)<-"adjusted.pval"
+tt.test.output
+```
+
+There does not seem to be any association between predicted proportion of each cell type and group status (T1 vs T2 in patient samples).
+
+#### Comparison of cell type proportions between controls and T2 patient samples
+```{r, echo=FALSE}
+# subset data to just control vs T2 patient samples
+toMatch3<-c("control", "t2")
+c2.samples <- grep(paste(toMatch3,collapse="|"),all.dat$Sample_Group)
+c2_subset<-all.dat[,c2.samples]
+meta.c2<-pData(c2_subset)
+meta.c2$Sample_Group<-as.factor(as.character(meta.c2$Sample_Group))
+meta.c2$Sample_Name<-colnames(exprs(c2_subset))
+
+# combine meta data with predicted cell proportions
+diff.c2<-diff[which(rownames(diff)%in%rownames(meta.c2)),]
+identical(rownames(diff.c2), rownames(meta.c2)) #TRUE 
+meta.c2.diff<-cbind(meta.c2$Sample_Group, diff.c2)
+colnames(meta.c2.diff)<-c("Group","CD8T", "CD4T", "NK", "Bcell", "Mono", "Gran")
+head(melted.diff.c2<-melt(meta.c2.diff))
+colnames(melted.diff.c2)<-c("Group", "Cell.Type", "Predicted.Proportion")
+melted.diff.c2$Group<-as.factor(melted.diff.c2$Group)
+# plot predicted proportions for each cell type by group
+ggplot(melted.diff.c2, aes(Group, Predicted.Proportion)) + geom_point(aes(colour=Group), size=3,shape=19, position=position_jitter(w=0.2)) + scale_colour_manual(values=c("#d53e4f","#3288bd")) + theme_bw() +facet_wrap(~Cell.Type)
+
+# test difference between groups to see if there is a significant difference in cell type proportion between controls and T2 patient (Mann-Whitney U test)
+mw.test.CD8T<-wilcox.test(meta.c2.diff[which(meta.c2.diff$Group=="control"), "CD8T"],meta.c2.diff[which(meta.c2.diff$Group=="t2"), "CD8T"])
+mw.test.CD4T<-wilcox.test(meta.c2.diff[which(meta.c2.diff$Group=="control"), "CD4T"],meta.c2.diff[which(meta.c2.diff$Group=="t2"), "CD4T"])
+mw.test.NK<-wilcox.test(meta.c2.diff[which(meta.c2.diff$Group=="control"), "NK"],meta.c2.diff[which(meta.c2.diff$Group=="t2"), "NK"])
+mw.test.Bcell<-wilcox.test(meta.c2.diff[which(meta.c2.diff$Group=="control"), "Bcell"],meta.c2.diff[which(meta.c2.diff$Group=="t2"), "Bcell"])
+mw.test.Mono<-wilcox.test(meta.c2.diff[which(meta.c2.diff$Group=="control"), "Mono"],meta.c2.diff[which(meta.c2.diff$Group=="t2"), "Mono"])
+mw.test.Gran<-wilcox.test(meta.c2.diff[which(meta.c2.diff$Group=="control"), "Gran"],meta.c2.diff[which(meta.c2.diff$Group=="t2"), "Gran"])
+
+# multiple test correction
+p.vals<-c(mw.test.CD8T$p.value, mw.test.CD4T$p.value, mw.test.NK$p.value, mw.test.Bcell$p.value, mw.test.Mono$p.value, mw.test.Gran$p.value)
+c2.test.output<-as.matrix(adjusted.pvals.c2<-p.adjust(p.vals, method="BH"))
+rownames(c2.test.output)<-c("CD8T", "CD4T", "NK", "Bcell", "Mono", "Gran")
+colnames(c2.test.output)<-"adjusted.pval"
+c2.test.output
+```
+
+There does not seem to be any association between predicted proportion of each cell type and group status (controls vs T2 in patient samples).
+
+### D. Regress out inter-individual differences in blood cell type proportions from DNA methylation data
+
+```{r echo=FALSE}
+identical(colnames(betas(all.dat)), rownames(diff)) # Should be TRUE
+betas<-betas(all.dat) 
+# fit linear model for cell type effects on each probe in betas
+betas.lm<-apply(betas, 1, function(x){
+  blood<-diff[colnames(betas),]
+  lm(x~CD8T+CD4T+NK+Bcell+Mono+Gran,data=blood)
+})
+# extract matrix of residuals from resulting linear models
+residuals<-t(sapply(betas.lm, function(x)residuals(summary(x))))
+colnames(residuals)<-colnames(betas) # re-name residuals columns with sample names
+# add the residuals of each regression model to the mean methylation value of each probe (mean across all samples) to obtain the âadjustedâ methylation data.
+adj.residuals<-residuals+matrix(apply(betas, 1, mean), nrow=nrow(residuals), ncol=ncol(residuals))
+head(adj.residuals)
+
+# To make sure we do not induce any NAs into the dataset when we convert the beta values back M-values (by log2 transformation), we need to ensure we do not have any corrected beta values that are greater or equal to zero or any beta values that are greater than 1. 
+
+adj.residuals[adj.residuals<=0]<-0.001 # convert any values that are less than or equal to zero to 0.001
+adj.residuals[adj.residuals>1]<-0.999 # convert any values that are greater than 1 to 0.999
+adj.M.values<-beta2m(adj.residuals)
+any(is.na(adj.M.values)) # should be FALSE indicating there are no NAs
+summary(adj.residuals)
+
+# replace adjusted data into a cloned methylumi object
+EDDA.cell.cor<-all.dat
+identical(rownames(adj.M.values), rownames(exprs(EDDA.cell.cor))) # should be TRUE for probe order check
+identical(colnames(adj.M.values), colnames(exprs(EDDA.cell.cor))) # should be TRUE for sample order check
+exprs(EDDA.cell.cor)<-adj.M.values
+all.equal(exprs(EDDA.cell.cor),adj.M.values) # TRUE
+# save(EDDA.cell.cor,file = "EDDA.cell.cor.RData")
+load("EDDA.cell.cor.RData")
+```
+
+### D. PCA to check DNA methylation Profiles before and after cell type correction
+
+#### Define heat scree PCA function
+
+```{r, echo = FALSE}
+
+### Function of association meta variable with PC (ANOVA)
+heat_scree_plot<-function(Loadings, Importance, Num, Order){
+  adjust<-1-Importance[1]
+  pca_adjusted<-Importance[2:length(Importance)]/adjust
+  pca_df<-data.frame(adjusted_variance=pca_adjusted, PC=seq(1:length(pca_adjusted)))
+  
+  scree<-ggplot(pca_df[which(pca_df$PC<Num),],aes(PC,adjusted_variance))+geom_bar(stat = "identity",color="black",fill="grey")+theme_bw()+
+        theme(axis.text = element_text(size =12),
+              axis.title = element_text(size =15),
+              plot.margin=unit(c(1,1.5,0.2,2.25),"cm"))+ylab("Variance")+
+    scale_x_continuous(breaks = seq(1,Num,1))
+  
+  #### Heat
+  ## correlate meta with PCS
+  ## Run anova of each PC on each meta data variable
+
+  aov_PC_meta<-lapply(1:ncol(meta_categorical), function(covar) sapply(1:ncol(Loadings), function(PC) summary(aov(Loadings[,PC]~meta_categorical[,covar]))[[1]]$"Pr(>F)"[1]))
+   cor_PC_meta<-lapply(1:ncol(meta_continuous), function(covar) sapply(1:ncol(Loadings), function(PC) (cor.test(Loadings[,PC],as.numeric(meta_continuous[,covar]),alternative = "two.sided", method="spearman", na.action=na.omit)$p.value)))
+  names(aov_PC_meta)<-colnames(meta_categorical)
+  names(cor_PC_meta)<-colnames(meta_continuous)
+  aov_PC_meta<-do.call(rbind, aov_PC_meta)
+  cor_PC_meta<-do.call(rbind, cor_PC_meta)
+  aov_PC_meta<-rbind(aov_PC_meta, cor_PC_meta)
+  aov_PC_meta<-as.data.frame(aov_PC_meta)
+  #adjust
+  aov_PC_meta_adjust<-aov_PC_meta[,2:ncol(aov_PC_meta)]
+  
+    
+  #reshape
+  avo<-aov_PC_meta_adjust[,1:(Num-1)]
+  avo_heat_num<-apply(avo,2, as.numeric)
+  avo_heat<-as.data.frame(avo_heat_num)
+  colnames(avo_heat)<-sapply(1:(Num-1), function(x) paste("PC",x, sep=""))
+  avo_heat$meta<-rownames(avo)
+  avo_heat_melt<-melt(avo_heat, id=c("meta"))
+  
+  # cluster meta data
+  ord <- Order
+  meta_var_order<-unique(avo_heat_melt$meta)[rev(ord)]
+  avo_heat_melt$meta <- factor(avo_heat_melt$meta, levels = meta_var_order)
+  
+  # color if sig
+  # avo_heat_melt$Pvalue<-sapply(1:nrow(avo_heat_melt), function(x) if(avo_heat_melt$value[x]>=0.9){">=0.9"}else{
+   # if(avo_heat_melt$value[x]>=0.5){">=0.5"}else{
+     # if(avo_heat_melt$value[x]>=0.1){">=0.1"}else{"<0.1"}}})
+  avo_heat_melt$Pvalue<-sapply(1:nrow(avo_heat_melt), function(x) if(avo_heat_melt$value[x]<=0.001){"<=0.001"}else{
+     if(avo_heat_melt$value[x]<=0.01){"<=0.01"}else{
+       if(avo_heat_melt$value[x]<=0.05){"<=0.05"}else{">0.05"}}})
+  
+  heat<-ggplot(avo_heat_melt, aes(variable,meta, fill = Pvalue)) +
+  geom_tile(color = "black",size=0.5) +
+  theme_gray(8)+scale_fill_manual(values=c("#084594","#4292c6","#9ecae1","#deebf7"))+
+      theme(axis.text = element_text(size =10, color="black"),
+            axis.text.x = element_text(),
+          axis.title = element_text(size =15),
+          legend.text = element_text(size =14),
+          legend.title = element_text(size =12),
+          legend.position = c(1, 0), legend.justification = c(1,0),
+          plot.margin=unit(c(0,2.25,1,1),"cm"))+
+    xlab("Principal Component")+ylab(NULL)
+  
+  grid.arrange(scree, heat, ncol=1)
+}
+```
+
+#### Pull out uncorrected PBMC methylation profiles and associated metadata
+```{r echo=FALSE}
+
+## re-structure meta data: change categorical variables to factors for ANOVA and continuous variables to numeric for Spearman's correlation
+EDDA.Des<-pData(EDDA.combat)
+identical(rownames(diff), rownames(EDDA.Des)) #TRUE 
+EDDA.Des$nationality<-as.factor(EDDA.Des$nationality)
+EDDA.Des$Sentrix_ID<-as.factor(EDDA.Des$Sentrix_ID)
+EDDA.Des$Sample_Group<-as.factor(EDDA.Des$Sample_Group)
+for (i in 1:nrow(EDDA.Des)){
+  EDDA.Des$Row[i]<-paste(substr(EDDA.Des[i,"Sentrix_Position"], start=1, stop=3))
+}
+EDDA.Des$Row<- as.factor(EDDA.Des$Row)
+meta.all<-cbind(EDDA.Des, diff) # add cell type proportions
+str(meta.all)
+```
+
+#### Run PCA on uncorrected methylation profiles
+```{r warning=FALSE, fig.height=9, fig.width=11, echo=FALSE}
+betas.uncorr<-betas(EDDA.combat)
+## PCA
+PCA_full<-princomp(betas.uncorr[complete.cases(betas.uncorr),]) # scaling is not necessary for normalized dataset
+Loadings<-as.data.frame(unclass(PCA_full$loadings))
+vars <- PCA_full$sdev^2
+Importance<-vars/sum(vars)
+adjust<-1-Importance[1]
+pca_adjusted<-Importance[2:length(Importance)]/adjust
+(pca_df<-data.frame(adjusted_variance=pca_adjusted, PC=seq(1:length(pca_adjusted))))
+sum(pca_df$adjusted_variance[1:11]) # first 11 PCs explain 60% of variance
+# save(pca_df, file="Adj_PC_variance_cortexDat.uncor.txt")
+#Specify which covariates are categorical and/or categorical
+colnames(meta.all)
+meta_categorical<-meta.all[,c("Sentrix_ID", "Row", "Sample_Group")]  # input column numbers in meta that contain categorical variables
+meta_continuous<-meta.all[,c("CD8T","CD4T","NK","Bcell","Mono","Gran","Age", "Cigarettes_perDay")] # input column numbers in meta that contain continuous variables
+meta_continuous<-data.frame(meta_continuous)
+colnames(meta_categorical)<-c("Sentrix_ID", "Row", "Sample_Group")
+colnames(meta_continuous)<-c("CD8T","CD4T","NK","Bcell","Mono","Gran","Age", "Cigarettes_perDay")
+
+# Specify the number of PCs you want shown (usually # of samples in the dataset)
+Num<-11
+
+# Designate what order you want the variables to appear (continuous variables rbinded to categorical variables in function)
+Order<-1:11
+
+#Apply function on PCA results, pulls in the meta data and beta values from above
+heat_scree_plot(Loadings, Importance, Num, Order)
+```
+
+The blood cell types  come up in the first PC signifying that they are attributed to a significant amount of DNA methylation variation and may be associated with age and/or cigarettes per Day. Group and CD8T and Bcell all co-occur in PC5.  
+
+#### Run PCA on corrected PBMC methylation profiles
+```{r warning=FALSE, fig.height=9, fig.width=11, echo=FALSE}
+identical(rownames(meta.all), colnames(exprs(EDDA.cell.cor))) #TRUE
+betas.cor<-betas(EDDA.cell.cor)
+## PCA
+PCA_full<-princomp(betas.cor[complete.cases(betas.cor),]) # scaling is not necessary for normalized dataset
+Loadings<-as.data.frame(unclass(PCA_full$loadings))
+vars <- PCA_full$sdev^2
+Importance<-vars/sum(vars)
+adjust<-1-Importance[1]
+pca_adjusted<-Importance[2:length(Importance)]/adjust
+(pca_df<-data.frame(adjusted_variance=pca_adjusted, PC=seq(1:length(pca_adjusted))))
+sum(pca_df$adjusted_variance[1:11]) # first 11 PCs explain 45% of variance
+# save(pca_df, file="Adj_PC_variance_cortexDat.uncor.txt")
+
+#Specify which covariates are categorical and/or categorical
+colnames(meta.all)
+meta_categorical<-meta.all[,c("Sentrix_ID", "Row", "Sample_Group")]  # input column numbers in meta that contain categorical variables
+meta_continuous<-meta.all[,c("CD8T","CD4T","NK","Bcell","Mono","Gran","Age", "Cigarettes_perDay")] # input column numbers in meta that contain continuous variables
+meta_continuous<-data.frame(meta_continuous)
+colnames(meta_categorical)<-c("Sentrix_ID", "Row", "Sample_Group")
+colnames(meta_continuous)<-c("CD8T","CD4T","NK","Bcell","Mono","Gran","Age", "Cigarettes_perDay")
+
+# Specify the number of PCs you want shown (usually # of samples in the dataset)
+Num<-11
+
+# Designate what order you want the variables to appear (continuous variables rbinded to categorical variables in function)
+Order<-1:11
+
+#Apply function on PCA results, pulls in the meta data and beta values from above
+heat_scree_plot(Loadings, Importance, Num, Order)
+```
+
+We can see that Sample_Group is now associated with PC1 in the corrected methylation data, along with Age.
+
+We will re-run differential DNA methylation analysis using the corrected data. 

@@ -1,0 +1,304 @@
+EDDA ComBat
+========================================================
+## Author: Sumaiya Islam
+## Date: November 12, 2015
+
+### A. Set up working directory & packages
+
+Use R version 3.1.1 (2014-07-10)
+
+Here we will continue from normalization to check/correct for possible technical variation in the DNA methylation data. 
+
+We will initially set our working directory and load our libraries.
+```{r EDDA_load_libraries, include=FALSE, echo=FALSE}
+setwd("/home/sislam/EDDA")
+library(methylumi)
+library(gplots)
+library(marray)
+library(lumi)
+library(lattice)
+library(knitr)
+library(xtable)
+library(qvalue)
+library(sva)
+library(wateRmelon)
+library(reshape)
+library(ggplot2)
+library(RColorBrewer)
+library(grid)
+library(gridExtra)
+```
+
+### B. Load files
+
+#### We will be analyzing the SWAN normalized dataset generated from the normalization script. 
+
+
+```{r EDDA_fileLoad, echo=FALSE}
+load("EDDA.swan.RData") #load SWAN-normalized (uncorrected) EDDA dataset
+EDDA.swan # probes = 452,266, n = 72
+EDDA.Dat<-EDDA.swan
+EDDA.Des<- pData(EDDA.swan)
+```
+
+### C. Principal Component Analysis (PCA)
+
+#### We will start by running PCA on the normalized (uncorrected) dataset. PCA is a data dimensionality reduction method which attempts to define linearly independent principal components which explain incremental proportions of variance of the dataset. Measured variables in the metadata can be correlated to these principal components to discern which degree of variation they describe. A more detailed description of PCA and its assumptions are provided below: 
+
+Principal components analysis is a popular tool for studying high-dimensional data. It relies on four major assumptions:
+1. Linearity. This means that the only interaction among different signal sources is that they add together. If the strength of a combined signal were the product of the strengths of contributing signals, for instance, this would be a non-linear interaction and PCA would not work.
+2. The interesting dynamics have the largest variances.
+3. Mean and variance are sufficient statistics. Since PCA is designed around the covariance matrix of mean-centered data, the only statistics it considers are the mean and variance. If the data cannot adequately be described by its mean and variance (e.g. it is not Gaussian or exponentially distributed), PCA will be inadequate.
+4. Orthogonal components. This is a particularly strong assumption made by PCA. It is this assumption that allows PCA to be computationally straightforward, but is not a realistic assumption in many data sets.
+
+#### We will perform principal component analysis (PCA) to see if any of the covariates in the metadata correlate with the principal components. If I find that chip (or chip position) correlate with any of the principal components then it will mean we likely have a chip-to-chip effect (or position-to-position effect) which I'll have to correct using ComBat. PCA will also help us investigate the major sources of variation in the dataset. 
+
+## Heat scree plot Function
+```{r, echo=FALSE}
+### Function of association meta variable with PC (ANOVA)
+heat_scree_plot<-function(Loadings, Importance, Num, Order){
+  adjust<-1-Importance[1]
+  pca_adjusted<-Importance[2:length(Importance)]/adjust
+  pca_df<-data.frame(adjusted_variance=pca_adjusted, PC=seq(1:length(pca_adjusted)))
+  
+  scree<-ggplot(pca_df[which(pca_df$PC<Num),],aes(PC,adjusted_variance))+geom_bar(stat = "identity",color="black",fill="grey")+theme_bw()+
+        theme(axis.text = element_text(size =12),
+              axis.title = element_text(size =15),
+              plot.margin=unit(c(1,1.5,0.2,2.25),"cm"))+ylab("Variance")+
+    scale_x_continuous(breaks = seq(1,Num,1))
+  
+  #### Heat
+  ## correlate meta with PCS
+  ## Run anova of each PC on each meta data variable
+
+  aov_PC_meta<-lapply(1:ncol(meta_categorical), function(covar) sapply(1:ncol(Loadings), function(PC) summary(aov(Loadings[,PC]~meta_categorical[,covar]))[[1]]$"Pr(>F)"[1]))
+   cor_PC_meta<-lapply(1:ncol(meta_continuous), function(covar) sapply(1:ncol(Loadings), function(PC) (cor.test(Loadings[,PC],as.numeric(meta_continuous[,covar]),alternative = "two.sided", method="spearman", na.action=na.omit)$p.value)))
+  names(aov_PC_meta)<-colnames(meta_categorical)
+  names(cor_PC_meta)<-colnames(meta_continuous)
+  aov_PC_meta<-do.call(rbind, aov_PC_meta)
+  cor_PC_meta<-do.call(rbind, cor_PC_meta)
+  aov_PC_meta<-rbind(aov_PC_meta, cor_PC_meta)
+  aov_PC_meta<-as.data.frame(aov_PC_meta)
+  #adjust
+  aov_PC_meta_adjust<-aov_PC_meta[,2:ncol(aov_PC_meta)]
+  
+    
+  #reshape
+  avo<-aov_PC_meta_adjust[,1:(Num-1)]
+  avo_heat_num<-apply(avo,2, as.numeric)
+  avo_heat<-as.data.frame(avo_heat_num)
+  colnames(avo_heat)<-sapply(1:(Num-1), function(x) paste("PC",x, sep=""))
+  avo_heat$meta<-rownames(avo)
+  avo_heat_melt<-melt(avo_heat, id=c("meta"))
+  
+  # cluster meta data
+  ord <- Order
+  meta_var_order<-unique(avo_heat_melt$meta)[rev(ord)]
+  avo_heat_melt$meta <- factor(avo_heat_melt$meta, levels = meta_var_order)
+  
+  # color if sig
+  # avo_heat_melt$Pvalue<-sapply(1:nrow(avo_heat_melt), function(x) if(avo_heat_melt$value[x]>=0.9){">=0.9"}else{
+   # if(avo_heat_melt$value[x]>=0.5){">=0.5"}else{
+     # if(avo_heat_melt$value[x]>=0.1){">=0.1"}else{"<0.1"}}})
+  avo_heat_melt$Pvalue<-sapply(1:nrow(avo_heat_melt), function(x) if(avo_heat_melt$value[x]<=0.001){"<=0.001"}else{
+     if(avo_heat_melt$value[x]<=0.01){"<=0.01"}else{
+       if(avo_heat_melt$value[x]<=0.05){"<=0.05"}else{">0.05"}}})
+  
+  heat<-ggplot(avo_heat_melt, aes(variable,meta, fill = Pvalue)) +
+  geom_tile(color = "black",size=0.5) +
+  theme_gray(8)+scale_fill_manual(values=c("#084594","#4292c6","#9ecae1","#deebf7"))+
+      theme(axis.text = element_text(size =10, color="black"),
+            axis.text.x = element_text(),
+          axis.title = element_text(size =15),
+          legend.text = element_text(size =14),
+          legend.title = element_text(size =12),
+          legend.position = c(1, 0), legend.justification = c(1,0),
+          plot.margin=unit(c(0,2.25,1,1),"cm"))+
+    xlab("Principal Component")+ylab(NULL)
+  
+  grid.arrange(scree, heat, ncol=1)
+}
+```
+
+
+
+```{r, echo=FALSE}
+## re-structure meta data: change categorical variables to factors for ANOVA and continuous variables to numeric for Spearman's correlation
+EDDA.Des
+EDDA.Des$nationality<-as.factor(EDDA.Des$nationality)
+EDDA.Des$Sentrix_ID<-as.factor(EDDA.Des$Sentrix_ID)
+str(EDDA.Des)
+identical(colnames(exprs(EDDA.swan)),rownames(EDDA.Des))
+# for Row
+for (i in 1:nrow(EDDA.Des)){
+  EDDA.Des$Row[i]<-paste(substr(EDDA.Des[i,"Sentrix_Position"], start=1, stop=3))
+}
+EDDA.Des$Row<- as.factor(EDDA.Des$Row)
+str(EDDA.Des)
+```
+
+
+## PCA Scree Heatmap for EDDA dataset (normalized before ComBat)
+
+```{r warning=FALSE, echo=FALSE, fig.height=9, fig.width=11}
+betas.EDDA<-betas(EDDA.Dat)
+## PCA
+PCA_full<-princomp(betas.EDDA[complete.cases(betas.EDDA),]) # scaling is not necessary for normalized dataset
+Loadings<-as.data.frame(unclass(PCA_full$loadings))
+vars <- PCA_full$sdev^2
+Importance<-vars/sum(vars)
+adjust<-1-Importance[1]
+pca_adjusted<-Importance[2:length(Importance)]/adjust
+(pca_df<-data.frame(adjusted_variance=pca_adjusted, PC=seq(1:length(pca_adjusted))))
+sum(pca_df$adjusted_variance[1:30]) # first 30 PCs explain 80% of variance
+# save(pca_df, file="Adj_PC_variance_cortexDat.uncor.txt")
+
+#Specify which covariates are categorical and/or categorical
+meta_categorical<-EDDA.Des[,c("Sample_Group", "Sentrix_ID", "Row")]  # input column numbers in meta that contain categorical variables
+meta_continuous<-EDDA.Des[,c("Age", "Cigarettes_perDay")] # input column numbers in meta that contain continuous variables
+meta_continuous<-data.frame(meta_continuous)
+colnames(meta_categorical)<-c("Patient Group","Chip", "Row")
+colnames(meta_continuous)<-c("Age", "Cigarettes per Day")
+
+# Specifiy the number of PCs you want shown
+Num<-30
+
+# Designate what order you want the variables to appear (continuous variables rbinded to categorical variables in function)
+Order<-1:5
+
+#Apply function on PCA results, pulls in the meta data and beta values from above
+heat_scree_plot(Loadings, Importance, Num, Order)
+```
+
+We can see that there is some technical variation in the DNAm data. Specifically, we see chip effects in PC2, PC5, PC6, PC8, PC13 & PC23. Row position on chip variation is correlated to PC15 and PC19. We will need to run ComBat to remove these technical artifacts (chip effects and row effects). We will protect Patient Group status as this is the variable we are interested in---note that Patient Group and Chip both are associated with PC23.  
+ 
+
+### D. ComBat
+
+ComBat uses an empirical Bayesian (EB) estimates the Location(mean)/Scale(variance) model parameters that represent the batch effects by “pooling information” across genes in each batch to “shrink” the batch effect parameter estimates toward the overall mean of the batch effect estimates (across genes). These EB estimates are then used to adjust the data for batch effects, providing more robust adjustments for the batch effect on each gene (Johnson et al 2007 *Biostatistics*).
+
+According to the creators of the SVA package, you need to run Combat to correct for technical variation in the following order: Variables with fewest number of batches to variables with most number of batches (ie Batch, Row, Chip). Since both Chip and Row have 6 groups in this case, we will correct in the order of variables contributing to the most to the least of technical variation (ie Chip, Row).
+
+We will start by perfoming ComBat to correct out Chip effects (while protecting Patient Group)
+```{r, echo=FALSE}
+EDDA.uncorrected.mvals <- exprs(EDDA.Dat) # ComBat must be applied to M-values from normalized dataset
+str(EDDA.Des)
+mod <- model.matrix(~ Sample_Group, data=EDDA.Des) # model matrix of variables to protect
+EDDA.chip.combat <- ComBat(dat=EDDA.uncorrected.mvals, batch=EDDA.Des$Sentrix_ID, mod=mod)
+
+
+### fill in the slot of the methylumi object with ComBat file
+EDDA.combat.1 <- EDDA.swan
+identical(rownames(exprs(EDDA.swan)), rownames(EDDA.chip.combat)) # TRUE
+exprs(EDDA.combat.1)<-EDDA.chip.combat
+str(EDDA.chip.combat)
+# save(EDDA.cortex.combat, file="EDDA.cortex.combat.RData")
+```
+
+We will now re-run PCA as before on the ComBat dataset to see if the chip effects have been removed:
+
+## PCA Scree Heatmap for EDDA dataset
+
+```{r warning=FALSE, echo=FALSE, fig.height=9, fig.width=11}
+betas.EDDA.combat1<-betas(EDDA.combat.1)
+## PCA
+PCA_full<-princomp(betas.EDDA.combat1[complete.cases(betas.EDDA.combat1),]) # scaling is not necessary for normalized dataset
+Loadings<-as.data.frame(unclass(PCA_full$loadings))
+vars <- PCA_full$sdev^2
+Importance<-vars/sum(vars)
+adjust<-1-Importance[1]
+pca_adjusted<-Importance[2:length(Importance)]/adjust
+(pca_df<-data.frame(adjusted_variance=pca_adjusted, PC=seq(1:length(pca_adjusted))))
+sum(pca_df$adjusted_variance[1:30]) # first 30 PCs explain 80% of variance
+# save(pca_df, file="Adj_PC_variance_cortexDat.uncor.txt")
+
+#Specify which covariates are categorical and/or categorical
+meta_categorical<-EDDA.Des[,c("Sample_Group", "Sentrix_ID", "Row")]  # input column numbers in meta that contain categorical variables
+meta_continuous<-EDDA.Des[,c("Age", "Cigarettes_perDay")] # input column numbers in meta that contain continuous variables
+meta_continuous<-data.frame(meta_continuous)
+colnames(meta_categorical)<-c("Patient Group","Chip", "Row")
+colnames(meta_continuous)<-c("Age", "Cigarettes per Day")
+
+# Specifiy the number of PCs you want shown
+Num<-30
+
+# Designate what order you want the variables to appear (continuous variables rbinded to categorical variables in function)
+Order<-1:5
+
+#Apply function on PCA results, pulls in the meta data and beta values from above
+heat_scree_plot(Loadings, Importance, Num, Order)
+```
+
+We can see that after ComBat to correct for chip effects, chip is not correlated with any of the top 30 PCs. We will move on to correct for row effects now. 
+
+```{r, echo=FALSE}
+EDDA.combat1.mvals <- exprs(EDDA.combat.1) # ComBat must be applied to M-values from normalized dataset
+str(EDDA.Des)
+mod <- model.matrix(~ Sample_Group, data=EDDA.Des) # model matrix of variables to protect
+EDDA.row.combat <- ComBat(dat=EDDA.combat1.mvals, batch=EDDA.Des$Row, mod=mod)
+
+
+### fill in the slot of the methylumi object with ComBat file
+EDDA.combat <- EDDA.combat.1
+identical(rownames(exprs(EDDA.combat)), rownames(EDDA.row.combat)) # TRUE
+exprs(EDDA.combat)<-EDDA.row.combat
+# save(EDDA.combat, file="EDDA.combat.RData")
+```
+
+We will now re-run PCA as before on the ComBat dataset to see if the chip and row effects have been removed:
+
+## PCA Scree Heatmap for EDDA dataset
+
+```{r warning=FALSE, echo=FALSE, fig.height=9, fig.width=11}
+betas.EDDA.combat<-betas(EDDA.combat)
+## PCA
+PCA_full<-princomp(betas.EDDA.combat[complete.cases(betas.EDDA.combat),]) # scaling is not necessary for normalized dataset
+Loadings<-as.data.frame(unclass(PCA_full$loadings))
+vars <- PCA_full$sdev^2
+Importance<-vars/sum(vars)
+adjust<-1-Importance[1]
+pca_adjusted<-Importance[2:length(Importance)]/adjust
+(pca_df<-data.frame(adjusted_variance=pca_adjusted, PC=seq(1:length(pca_adjusted))))
+sum(pca_df$adjusted_variance[1:30]) # first 30 PCs explain 80% of variance
+# save(pca_df, file="Adj_PC_variance_cortexDat.uncor.txt")
+
+#Specify which covariates are categorical and/or categorical
+meta_categorical<-EDDA.Des[,c("Sample_Group", "Sentrix_ID", "Row")]  # input column numbers in meta that contain categorical variables
+meta_continuous<-EDDA.Des[,c("Age", "Cigarettes_perDay")] # input column numbers in meta that contain continuous variables
+meta_continuous<-data.frame(meta_continuous)
+colnames(meta_categorical)<-c("Patient Group","Chip", "Row")
+colnames(meta_continuous)<-c("Age", "Cigarettes per Day")
+
+# Specifiy the number of PCs you want shown
+Num<-30
+
+# Designate what order you want the variables to appear (continuous variables rbinded to categorical variables in function)
+Order<-1:5
+
+#Apply function on PCA results, pulls in the meta data and beta values from above
+heat_scree_plot(Loadings, Importance, Num, Order)
+```
+
+We can see that after Combat to remove row effects, there are no chip or row effects remaining (not associated with any of the PCs). Interestingly, Patient Group variable is now associated with PC4, PC5 and PC10. Age is associated with the top PCs (PC1, PC2 and PC3), comprising most of the variation in the DNA methylation data. Cigarettes per day is also associated with PC1 (likely correlated to age as well), PC6 and PC10. Since both patient group and cigarettes per day are associated with the same PC (PC10), it is likely that patient group is correlated with cigarettes per day. This should be tested. 
+
+### E. Check Technical Replicate Correlation
+
+We determined from the 65 SNP profile that EDDA_59 and EDDA_70 are likely technical replicates (same DNA submitted twice). We will use these as technical replicates to check for technical replicate correlations pre and post-ComBat. We expect improved correlation between replicates after ComBat.
+
+
+```{r}
+RepCor  <- function(x,y) {
+  sRep <- x[, sampleNames(x)%in%y]
+  cor.dat<- cor(betas(sRep), use = "pairwise.complete.obs")
+  return(result = cor.dat[1, 2])
+}
+
+Replicates<-c("EDDA_59", "EDDA_70")
+
+(pre_norm_correlation<-RepCor(EDDA.swan, Replicates)) # 0.9981698
+(post_norm_correlation<-RepCor(EDDA.combat, Replicates)) # 0.9985837
+```
+
+We can see there is a slight improvement in correlation between technical replicates (from 0.9981698 to 0.9985837) as desired.
+
+###### We will say that the DNA methylation data is now processed, probe-filtered, normalized, cleaned of technical variation and ready for use. EDDA.combat methylumi object will be subjected to downstream differential methylation analysis.  

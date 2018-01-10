@@ -1,0 +1,85 @@
+EDDA Validation by Pyrosequencing
+========================================================
+##### By: Sumaiya Islam
+##### Date: August 6, 2016
+
+### Script contents:
+- Confirmation of differential CpG sites identified by 450K array analysis (cg07280807,cg18752527) in an independent validation. Note that these pyrosequencing assays were performed by Chris in Tubingen using a separate batch of bisulfite-converted DNA from isolated T-cell samples of these individuals. 
+
+### A. Set up wd & packages
+
+We will initially set our working directory and load our libraries.
+```{r setup, include = FALSE, echo=FALSE}
+setwd("/home/sislam/EDDA")
+library(methylumi)
+library(gplots)
+library(marray)
+library(lumi)
+library(lattice)
+library("RColorBrewer")
+library(knitr)
+library(xtable)
+library(limma)
+library(reshape)
+library(ggplot2)
+library(grid)
+library(gridExtra)
+library(MASS)
+```
+
+### B. Load data
+
+We will load the pyrosequencing data for the target CpGs in validation cohort (cg07280807,cg18752527). 
+
+```{r load_data, echo=FALSE, include=FALSE}
+# load pyrosequencing data from Chris
+validation.dat<-read.csv(file="EDDA_Validation_Cohort_Pyro.csv", header = T, check.names=F)
+validation.dat$Group<-as.factor(validation.dat$Group)
+validate.pyro.dat<-validation.dat[,c("Sample","cg07280807", "cg18752527")]
+validate.pyro.melted<-melt(validate.pyro.dat, id.vars="Sample")
+colnames(validate.pyro.melted)<-c("Sample", "Probe", "Pyro_value")
+# merge with meta data
+validation.dat.plot<-merge(validate.pyro.melted, validation.dat[,c("Sample", "Group")], by.y="Sample", by.x="Sample")
+
+head(validation.dat.plot)
+```
+
+### B. Test if these CpG sites are significantly different using pyro measures in validation samples
+
+
+Test if averaged methylation values for each assay are significantly different between groups
+
+```{r echo=FALSE, fig.height=3, fig.width=8, warning=FALSE}
+
+# subset by probe and select only controls and T1 patients
+cg07280807.test.dat<-subset(validation.dat.plot, Probe=="cg07280807")
+cg18752527.test.dat<-subset(validation.dat.plot, Probe=="cg18752527")
+
+## test differences between controls and T1 patients one-sided T-test
+
+(assay.1.stat<-t.test(cg07280807.test.dat[which(cg07280807.test.dat$Group=="0"),"Pyro_value"], cg07280807.test.dat[which(cg07280807.test.dat$Group=="1"),"Pyro_value"], alternative="less")) # for cg07280807 p = 0.001822
+
+(assay.2.stat<-t.test(cg18752527.test.dat[which(cg18752527.test.dat$Group=="0"),"Pyro_value"], cg18752527.test.dat[which(cg18752527.test.dat$Group=="1"),"Pyro_value"], alternative="greater"))# for cg18752527 p = 4.51e-7
+
+
+(adjusted.p.values<-p.adjust(c(assay.1.stat$p.value,assay.2.stat$p.value), method="BH"))
+
+# place specific labels for group
+groupings<-gsub("0", "Control",  gsub("1", "Patient(T1)", validation.dat.plot$Group))
+validation.dat.plot$Group<-groupings
+
+## generate boxplots for each assay
+
+ggplot(validation.dat.plot, aes(Group, Pyro_value))+
+  geom_boxplot(aes(fill=Group, outlier.shape=NA))+
+  geom_point(aes(fill=Group), shape=21, size=2, position = position_jitter(w = 0.2))+
+  theme_bw()+xlab("Group")+ylab("Pyrosequencing DNA methylation")+
+  scale_fill_manual(values=c("#d6604d", "#4393c3"))+
+  facet_wrap(~Probe)
+
+```
+
+We see that these CpG sites are significantly different between controls and patients at T1 based on pyrosequencing measures. Specifically, based on one-sided t-test (after multiple test correction)
+
+* for cg07280807: Benjamini-Hochberg corrected p = 0.048
+* for cg18752527: Benjamini-Hochberg corrected p = 0.048

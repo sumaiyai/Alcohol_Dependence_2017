@@ -1,0 +1,79 @@
+EDDA Check Global Mean DNA Methylation between Sample Groups after each step
+============================================================================
+
+## A. Load datasets
+
+```{r}
+load("EDDA.swan.RData") # normalized data
+load("EDDA.combat.RData") # Combat-corrected data
+load("EDDA.cell.cor.RData") # cell type-corrected
+
+# remove EDDA_59 as it constitutes a technical replicate to EDDA_70
+sample.to.remove<-c("EDDA_59")
+EDDA.swan.rev <- EDDA.swan[,!(sampleNames(EDDA.swan))%in%sample.to.remove]
+EDDA.combat.rev <- EDDA.combat[,!(sampleNames(EDDA.combat))%in%sample.to.remove]
+EDDA.cell.cor.rev <- EDDA.cell.cor[,!(sampleNames(EDDA.cell.cor))%in%sample.to.remove]
+```
+
+## B. Check mean DNA methylation differences between sample groups
+
+For normalized data
+
+```{r}
+mean.betas<-colMeans(betas(EDDA.swan.rev))
+# identical(colnames(betas(EDDA.swan.rev)),rownames(pData(EDDA.swan.rev))) # TRUE
+meta.EDDA<-pData(EDDA.swan.rev)
+meta.EDDA$mean.betas<-mean.betas
+meta.EDDA$Sample_Group<-as.factor(meta.EDDA$Sample_Group)
+# plot mean global DNAm differences between groups
+ggplot(meta.EDDA, aes(Sample_Group, mean.betas))+
+  geom_boxplot(aes(fill=as.factor(Sample_Group)),color="black", outlier.shape=NA)+
+  geom_point(shape=21, fill="grey",colour="black", size=3, position=position_jitter(w=0.2))+
+  theme_bw()+xlab("Sample Group")+ylab("Mean Global DNA methylation")  + scale_fill_manual(values=c("#d6604d","#4393c3", "#92c5de"), guide=FALSE)
+
+# test controls vs T1 mean global DNAm differences by Mann Whitney U test
+(mw.test.meanDNAm<-wilcox.test(meta.EDDA[which(meta.EDDA$Sample_Group=="control"), "mean.betas"],meta.EDDA[which(meta.EDDA$Sample_Group=="patient"), "mean.betas"])) # p = 0.5906
+# test T1 vs T2 mean global DNAm differences by Wilcoxon paired signed-rank test
+(mw.test.meanDNAm.tt<-wilcox.test(meta.EDDA[which(meta.EDDA$Sample_Group=="patient"), "mean.betas"],meta.EDDA[which(meta.EDDA$Sample_Group=="patient_t2"), "mean.betas"], paired=TRUE)) # p = 0.04906
+```
+
+For combat-corrected data
+```{r}
+mean.betas<-colMeans(betas(EDDA.combat.rev))
+# identical(colnames(betas(EDDA.combat.rev)),rownames(pData(EDDA.combat.rev))) # TRUE
+meta.EDDA<-pData(EDDA.combat.rev)
+meta.EDDA$mean.betas<-mean.betas
+meta.EDDA$Sample_Group<-as.factor(meta.EDDA$Sample_Group)
+# plot mean global DNAm differences between groups
+ggplot(meta.EDDA, aes(Sample_Group, mean.betas))+
+  geom_boxplot(aes(fill=as.factor(Sample_Group)),color="black", outlier.shape=NA)+
+  geom_point(shape=21, fill="grey",colour="black", size=3, position=position_jitter(w=0.2))+
+  theme_bw()+xlab("Sample Group")+ylab("Mean Global DNA methylation")  + scale_fill_manual(values=c("#d6604d","#4393c3", "#92c5de"), guide=FALSE)
+
+# test controls vs T1 mean global DNAm differences by Mann Whitney U test
+(mw.test.meanDNAm<-wilcox.test(meta.EDDA[which(meta.EDDA$Sample_Group=="control"), "mean.betas"],meta.EDDA[which(meta.EDDA$Sample_Group=="patient"), "mean.betas"])) # p = 0.5761
+# test T1 vs T2 mean global DNAm differences by Wilcoxon paired signed-rank test
+(mw.test.meanDNAm.tt<-wilcox.test(meta.EDDA[which(meta.EDDA$Sample_Group=="patient"), "mean.betas"],meta.EDDA[which(meta.EDDA$Sample_Group=="patient_t2"), "mean.betas"], paired=TRUE)) # p = 0.02693
+```
+
+For cell-type corrected data
+```{r}
+mean.betas<-colMeans(betas(EDDA.cell.cor.rev))
+# identical(colnames(betas(EDDA.cell.cor.rev)),rownames(pData(EDDA.cell.cor.rev))) # TRUE
+meta.EDDA<-pData(EDDA.cell.cor.rev)
+meta.EDDA$mean.betas<-mean.betas
+meta.EDDA$Sample_Group<-as.factor(meta.EDDA$Sample_Group)
+# plot mean global DNAm differences between groups
+ggplot(meta.EDDA, aes(Sample_Group, mean.betas))+
+  geom_boxplot(aes(fill=as.factor(Sample_Group)),color="black", outlier.shape=NA)+
+  geom_point(shape=21, fill="grey",colour="black", size=3, position=position_jitter(w=0.2))+
+  theme_bw()+xlab("Sample Group")+ylab("Mean Global DNA methylation")  + scale_fill_manual(values=c("#d6604d","#4393c3", "#92c5de"), guide=FALSE)
+
+# test controls vs T1 mean global DNAm differences by Mann Whitney U test
+(mw.test.meanDNAm<-wilcox.test(meta.EDDA[which(meta.EDDA$Sample_Group=="control"), "mean.betas"],meta.EDDA[which(meta.EDDA$Sample_Group=="patient"), "mean.betas"])) # p = 0.04834
+(mw.test.meanDNAm<-wilcox.test(meta.EDDA[which(meta.EDDA$Sample_Group=="control"), "mean.betas"],meta.EDDA[which(meta.EDDA$Sample_Group=="t2"), "mean.betas"])) # p = 0.6053
+# test T1 vs T2 mean global DNAm differences by Wilcoxon paired signed-rank test
+(mw.test.meanDNAm.tt<-wilcox.test(meta.EDDA[which(meta.EDDA$Sample_Group=="patient"), "mean.betas"],meta.EDDA[which(meta.EDDA$Sample_Group=="t2"), "mean.betas"], paired=TRUE)) # p = 0.1515
+
+```
+

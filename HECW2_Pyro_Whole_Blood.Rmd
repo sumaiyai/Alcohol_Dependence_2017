@@ -1,0 +1,169 @@
+HECW2 Pyrosequencing in Whole Blood
+========================================================
+##### By: Sumaiya Islam
+##### Date: November 3, 2016
+
+### Script contents:
+- Analysis of differential CpG sites in HECW2 measured in whole blood in both the original EDDA cohort and in a separate validation cohort 
+
+### A. Set up wd & packages
+
+We will initially set our working directory and load our libraries.
+```{r setup, include = FALSE, echo=FALSE}
+setwd("/home/sislam/EDDA")
+library(methylumi)
+library(gplots)
+library(marray)
+library(lumi)
+library(lattice)
+library("RColorBrewer")
+library(knitr)
+library(xtable)
+library(limma)
+library(reshape)
+library(ggplot2)
+library(grid)
+library(gridExtra)
+library(MASS)
+library(wateRmelon)
+```
+
+### B. Load data
+
+We will load the pyrosequencing data for the target CpGs in validation cohort (cg07280807,cg18752527). 
+
+```{r load_data, echo=FALSE, include=FALSE}
+# load pyrosequencing data of original cohort from Chris
+HECW2.replication.dat<-read.csv(file="HECW2_Whole_blood_Replication_Pyro.csv", header = T, check.names=F)
+
+# place specific labels for group
+groupings<-gsub("0", "Control",  gsub("1", "Patient(T1)", HECW2.replication.dat$Group))
+HECW2.replication.dat$Group<-groupings
+HECW2.replication.dat$Group<-as.factor(HECW2.replication.dat$Group)
+
+# pull out columns of interest (Sample, Group, cg18752527)
+ori.dat<-HECW2.replication.dat[,c("Sample","Group", "cg18752527")]
+ori.dat$Cohort<-"Original"
+
+# load pyrosequencing data of original cohort from Chris
+HECW2.validation.dat<-read.csv(file="HECW2_Whole_blood_Validation_Pyro.csv" , header = T, check.names=F)
+
+# place specific labels for group
+CT1.groups<-c("0", "1")
+HECW2.validation.dat.CT1<-HECW2.validation.dat[which(HECW2.validation.dat$Group%in%CT1.groups),] # subset to only controls and T1 patients
+groupings<-gsub("0", "Control",  gsub("1", "Patient(T1)", HECW2.validation.dat.CT1$Group))
+HECW2.validation.dat.CT1$Group<-groupings
+HECW2.validation.dat.CT1$Group<-as.factor(HECW2.validation.dat.CT1$Group)
+vali.dat<-HECW2.validation.dat.CT1
+vali.dat$Cohort<-"Validation"
+
+# check that column names match between the dataframes
+identical(colnames(ori.dat), colnames(vali.dat)) # TRUE
+
+# rbind the two dataframes
+HECW2.whole.blood.pyro.dat<-rbind(ori.dat, vali.dat)
+HECW2.whole.blood.pyro.dat$Cohort<-as.factor(HECW2.whole.blood.pyro.dat$Cohort)
+head(HECW2.whole.blood.pyro.dat)
+```
+
+### B. Test if these CpG sites are significantly different using pyro measures in validation samples
+
+
+Test if averaged methylation values for each assay are significantly different between groups
+
+```{r echo=FALSE, fig.height=3, fig.width=8, warning=FALSE}
+
+## test differences between controls and T1 patients using two-sided t-test
+
+# for original cohort
+(ori.dat.stat<-t.test(ori.dat[which(ori.dat$Group=="Control"),"cg18752527"], ori.dat[which(ori.dat$Group=="Patient(T1)"),"cg18752527"])) # for original cohort p = 0.02005
+
+# for validation cohort
+(vali.dat.stat<-t.test(vali.dat[which(vali.dat$Group=="Control"),"cg18752527"], vali.dat[which(vali.dat$Group=="Patient(T1)"),"cg18752527"])) # for validation cohort p = 6.626e-05
+
+
+
+(adjusted.p.values<-p.adjust(c(ori.dat.stat$p.value,vali.dat.stat$p.value), method="BH"))
+
+
+
+## generate boxplots for each assay
+head(HECW2.whole.blood.pyro.dat)
+
+ggplot(HECW2.whole.blood.pyro.dat, aes(Group, cg18752527))+
+  geom_boxplot(aes(fill=Group, outlier.shape=NA))+
+  geom_point(aes(fill=Group), shape=21, size=2, position = position_jitter(w = 0.2))+
+  theme_bw()+xlab("Group")+ylab("cg18752527 DNA methylation (Pyro)")+
+  scale_fill_manual(values=c("#d6604d", "#4393c3"))+
+  facet_wrap(~Cohort)
+
+```
+
+We see that cg18752527 is significantly different between controls and patients at T1 based on pyrosequencing measures. Specifically, based on two-sided t-test (after multiple test correction)
+
+* for original cohort: Benjamini-Hochberg corrected p = 0.020
+* for validation cohort: Benjamini-Hochberg corrected p = 0.0001
+
+##### Test if cg18752527 DNA methylation is T-cell specific 
+
+Using the Reinius 450K data set of purified blood cell types, we will test to see if cg18752527 DNA methylation is associated with T-cells:
+
+```{r echo=FALSE}
+library(FlowSorted.Blood.450k)
+
+
+# load Reinius data and background-subtract/colour-correct data
+MSet.adult <- preprocessIllumina(FlowSorted.Blood.450k, bg.correct = TRUE, normalize = "controls", reference = 2)
+Reinius.dat.betas<- betas(MSet.adult)
+Reinius.meta<-pData(MSet.adult)
+# save(Reinius.meta, file = "Reinius_Meta_Data.RData")
+head(Reinius.dat.betas)
+dim(Reinius.dat.betas)
+
+
+# BMIQ normalization
+load("EDDA.RData") # load EDDA methylumi object with all 485577 probes
+filtered.EDDA<-EDDA[rownames(Reinius.dat.betas),] # filter to just probes in Reinius data
+target.probe.order<-featureNames(filtered.EDDA)
+Reinius.dat.betas.ordered<-Reinius.dat.betas[match(target.probe.order, rownames(Reinius.dat.betas)),] # match probe order
+identical(rownames(exprs(filtered.EDDA)), rownames(Reinius.dat.betas.ordered)) # check probe order matches; TRUE
+head(probe_design<-as.character(fData(filtered.EDDA)$INFINIUM_DESIGN_TYPE))
+probe_design.v<- replace(probe_design, probe_design=="I", 1)
+probe_design.cor<- replace(probe_design.v, probe_design.v=="II", 2)
+probe_design.cor<-as.numeric(probe_design.cor)
+identical(nrow(Reinius.dat.betas.ordered), length(probe_design.cor)) # TRUE
+Reinius_betas_normalized<-apply(Reinius.dat.betas.ordered, 2, function(x) BMIQ(x,probe_design.cor)) # this code takes some time
+
+# extract normalized beta values and reshape
+betas_normalized_betas<-lapply(1:length(Reinius_betas_normalized), function(x) Reinius_betas_normalized[[x]]$nbeta)
+betas_normalized_betas<-do.call(rbind, betas_normalized_betas)
+betas_norm.fin<-t(betas_normalized_betas)
+colnames(betas_norm.fin)<-colnames(Reinius.dat.betas.ordered)
+head(betas_norm.fin)
+Reinius_betas_normalized_fin<-betas_norm.fin
+identical(rownames(Reinius.meta), colnames(Reinius_betas_normalized_fin)) # sample names in meta and beta data match; TRUE
+
+# save(Reinius_betas_normalized_fin, file = "Reinius_betas_BMIQ_normalized.RData")
+probe.of.interest<-c("cg18752527")
+cg18752527.betas<-melt(Reinius_betas_normalized_fin[probe.of.interest,])
+cg18752527.betas$Sample<-rownames(cg18752527.betas)
+identical(Reinius.meta$Sample_Name, cg18752527.betas$Sample) # TRUE
+plot.site<-cbind(cg18752527.betas, Reinius.meta)
+
+# plot cg18752527 DNA methylation in relation to blood cell type
+ggplot(plot.site, aes(CellTypeLong, value))+
+  geom_boxplot(aes(fill=CellTypeLong), outlier.shape=NA)+
+  geom_point(aes(fill=CellTypeLong), shape=21, size=2, position = position_jitter(w = 0.2))+
+  theme_bw()+xlab("Blood Cell Type")+ylab("cg18752527 DNA methylation") +  guides(fill=guide_legend(title="Blood Cell Type")) + theme(axis.text.x = element_text(angle = 60, hjust=1))
+
+# statistics for significance of association between DNAm and blood cell group
+head(plot.site)
+result<-aov(value~CellTypeLong, data = plot.site)
+summary(result) # pvalue < 2 e-16
+
+# see if this matches this probe's association with blood cell composition as listed in the package's table of associations
+data("FlowSorted.Blood.450k.compTable")
+(probe.result.tab<-FlowSorted.Blood.450k.compTable["cg18752527",]) # p.value  = 7.6 e -15
+```
+
+Using a previous 450K dataset of purified blood cell types (Reinius et al. 2012 PLoS One), we confirmed that the DNAm status of this CpG site is highly associated with T-lymphocytes, along with NK cells, signifying that the DNAm differences we measured in whole blood were driven, in part, by T-cells.  

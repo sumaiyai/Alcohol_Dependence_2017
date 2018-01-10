@@ -1,0 +1,283 @@
+EDDA Testing for Smoking-Related DNA methylation Hits
+====================================================================
+## Author: Sumaiya Islam
+## Date Updated: May 10, 2016
+
+### A. Set up working directory & packages
+
+
+Here we re-run the differential DNA methylation analysis as before 
+
+We will initially set our working directory and load our libraries.
+```{r EDDA_load_libraries, include=FALSE, echo=FALSE}
+setwd("/home/sislam/EDDA")
+library(methylumi)
+library(gplots)
+library(marray)
+library(lumi)
+library(lattice)
+library(knitr)
+library(xtable)
+library(qvalue)
+library(sva)
+library(wateRmelon)
+library(reshape)
+library(ggplot2)
+library(RColorBrewer)
+library(grid)
+library(gridExtra)
+library(limma)
+```
+
+### B. Load files
+
+#### We will be analyzing the ComBat-corrected dataset generated from the ComBat script. 
+
+We will load the cell type-corrected methylumi object. We determined previously from the 65 SNP profile that EDDA_59 and EDDA_70 are likely technical replicates (same DNA submitted twice). We will remove EDDA_59 as it is redundant to include both replicates.
+
+```{r EDDA_fileLoad, echo=FALSE}
+# load("EDDA.combat.RData") #load ComBat-corrected EDDA dataset
+# dim(EDDA.combat) # probes = 452266, samples = 72
+# 
+# # remove EDDA_59
+# sample.to.remove<-c("EDDA_59")
+# EDDA.cor <- EDDA.combat[,!(sampleNames(EDDA.combat))%in%sample.to.remove]
+# dim(EDDA.cor) # probes = 452266, samples = 71
+# table(EDDA.cor$Sample_Group)
+# # save(EDDA.cor, file="EDDA.cor.RData")
+
+load("EDDA.cell.cor.RData")
+dim(EDDA.cell.cor) # probes = 452266, samples = 72
+ 
+# remove EDDA_59 as it constitutes a technical replicate to EDDA_70
+sample.to.remove<-c("EDDA_59")
+EDDA.cell.cor.rev <- EDDA.cell.cor[,!(sampleNames(EDDA.cell.cor))%in%sample.to.remove]
+dim(EDDA.cell.cor.rev) # probes = 452266, samples = 71
+table(EDDA.cell.cor.rev$Sample_Group)
+# save(EDDA.cell.cor.rev, file="EDDA.cor.final.RData")
+```
+
+### Test for correlation between age, cigarettes per day and sample group. 
+```{r echo = FALSE}
+meta<-pData(EDDA.cell.cor.rev)
+meta$Sample_Group <-as.factor(meta$Sample_Group)
+patient.subset<-meta[which(meta$Sample_Group=="patient"),]
+control.subset<-meta[which(meta$Sample_Group=="control"),]
+
+# test correlation between age and cigarettes per day
+cor.test(meta$Cigarettes_perDay, meta$Age, method="spearman") # p = 0.2918
+## no significant correlation between cigarettes per day and age
+
+# test difference in cigarettes per day between controls and patients
+wilcox.test(patient.subset$Cigarettes_perDay, control.subset$Cigarettes_perDay, paired=FALSE) # p = 0.3751
+## no significant smoking differences between controls and patients
+```
+
+We observe no significant association between cigarettes per day and age or cigarettes per day and sample group in this cohort. 
+
+### C. Differential DNA methylation analysis for smoking-related hits
+
+We will use linear regression analysis to test for smoking related hits. 
+
+- To test this, need to perform unpaired testing of linear model for T1 patient samples vs controls (adjusted for necessary covariates such as age and cigarettes per day). We will consider cigarettes per day as our main effect in this case. 
+
+We will first subset the data to control and T1 patient samples. Then will check that age and cigarettes per day are not correlated (as they come up in the same top PC)---this will rule out possible colinearity in our model. Then we will fit a linear model for T1 patient samples vs controls (adjusted for covariates of age and cigarettes per day which were associated with top-ranking PCs in our PCA).
+
+```{r, echo=FALSE}
+# subset data to just control vs T1 patient samples
+all.dat<-EDDA.cell.cor.rev
+pData(all.dat)$Sample_Group<-as.character(pData(all.dat)$Sample_Group)
+pData(all.dat)$Sample_Group<-gsub("patient_t2", "t2", all.dat$Sample_Group)
+toMatch<-c("control", "patient")
+con.t1.samples <- grep(paste(toMatch,collapse="|"),all.dat$Sample_Group)
+Con_T1_subset<-all.dat[,con.t1.samples]
+
+# check if age and cigarettes per day are correlated
+# cor.test(all.dat$Age, all.dat$Cigarettes_perDay, method="spearman") # not correlated
+
+### Linear regression analysis with unpaired testing (adjusted for age and cigarettes per day)
+
+# linear model: DNAm ~ Sample_Group + Age + Cigarettes_perDay
+meta<-pData(Con_T1_subset)
+meta$Sample_Group<-as.factor(meta$Sample_Group)
+design.Con.T1<- model.matrix(~Sample_Group + Age + Cigarettes_perDay, meta)
+# fit model
+fit.Con.T1 <- lmFit(exprs(Con_T1_subset), design.Con.T1) # fit model to M-values
+# use Bayesian model to generate moderated statistics
+fit.Con.T1.moderated <- eBayes(fit.Con.T1)
+colnames(design.Con.T1)
+# generate topTable linear regression outputs testing for effect of cigarettes_perDay 
+head(topT.Con.T1.smoking <- topTable(fit.Con.T1.moderated, coef="Cigarettes_perDay" , adjust = "BH",num=Inf))
+hist(topT.Con.T1.smoking$P.Value, breaks=40, main="Unadj. P-val distribution for Smoking-Associated Differences", xlab="Unadjusted p-value", ylab="Frequency", col="deeppink4")
+```
+
+We observe a uniform p-value distribution indicative of a null association between smoking (cigarettes per day) and DNAm (after accounting for sample group and age).
+
+* Note: Tested different linear models, including interaction between cigarettes per Day and sample group. However, all other models showed a rightward p-value distribution which a typical sign for a covariate for which was not controlled for.*
+
+### D. Test of significance of overlap between alcohol-related hits and previously published smoking-associated hits 
+
+We will test to see if the alcohol-related hits observed between controls and T1 patient samples overlap significantly with 95 smoking-related hits previously published in Besinigai & Johnansson 2014 HMG.  
+
+```{r echo=FALSE}
+# load smoking hits from Besinai & Johansson 2014 HMG
+smoking_hits_table<-read.csv("Besinai_ Johansson_2014_Smoking_DNAm_Hits.csv")
+
+betas_EDDA_CT1<-betas(Con_T1_subset) # use beta matrix of control vs T1 patient samples
+
+# load alcohol-related hits between controls and T1 patient samples
+CT1.alcohol.hits<-read.csv("Controls_vs_T1_hits.csv")
+
+
+
+# check overlap of hits
+intersect(CT1.alcohol.hits$CpG, smoking_hits_table$IlmnID)
+############
+## Gene list overlap significant testing
+############
+# This code takes CpG lists as input, associates the CpGs with genes, 
+# asks how much the gene lists overlap (could be easily edited to operate 
+# on the CpG level or really any list of things), then permutated 10,000 
+# random lists, asks how much then overlap and uses the perumutated overlap
+# numbers to ask if the real overlap significantly different than chance overlap
+
+### Code courtesy of Rachel Edgar
+
+## function is dependent on Rachel's gene annotation
+# load("Gene_CpG_Relations_updatejune2015.RData")
+#https://github.com/redgar598/General_Analysis/tree/master/annotations
+
+# PAWS_Beta is a data frame of beta values
+
+### This function takes two CpG probe lists and asks how much the genes associated with those probes overlap
+
+Permutate_overlap<-function(probe_list1, probe_list2){
+  len1<-nrow(probe_list1)
+  len2<-nrow(probe_list2)
+  rnd1<-rownames(betas_EDDA_CT1)[sample(1:nrow(betas_EDDA_CT1), len1)]
+  rnd2<-rownames(betas_EDDA_CT1)[sample(1:nrow(betas_EDDA_CT1), len2)]
+  
+#   Gene1<-Gene_CpG_Relations_update[which(Gene_CpG_Relations_update$Probe_ID%in%rnd1),]
+#   Gene1<-Gene1[!duplicated(Gene1),]
+#   Gene1<-Gene1[!duplicated(Gene1[,c(1,4)]),]
+#   
+#   Gene2<-Gene_CpG_Relations_update[which(Gene_CpG_Relations_update$Probe_ID%in%rnd2),]
+#   Gene2<-Gene2[!duplicated(Gene2),]
+#   Gene2<-Gene2[!duplicated(Gene2[,c(1,4)]),]
+  
+  # if you didn't want to do a gene based overlap you could skip eveything after the first 4 lines of this function and just rest of the function as:
+  length(intersect(rnd1, rnd2))
+  # length(intersect(unique(Gene1$gene), unique(Gene2$gene))) 
+}
+
+
+# Then apply this function in permutations on random CpG lists
+# you put in the the actual CpG lists of interest because the 
+# function takes the length of these lists to build the random CpG list
+smoking_alcohol_expected_overlap<-sapply(1:100, function(seed){
+  set.seed(seed)
+  Permutate_overlap(CT1.alcohol.hits, smoking_hits_table)
+})
+
+# overlap of real gene hits lists between two variables
+# FADV_6$gene is a list of genes associated with the FADV_6_sta_bio_hits CpGs
+# or just length(intersect(FADV_6_sta_bio_hits, HGHEDLV2_sta_bio_hits)) 
+#if you don't want to look at the gene level
+length(intersect(unique(smoking_hits_table$IlmnID), unique(CT1.alcohol.hits$CpG))) 
+
+mean(smoking_alcohol_expected_overlap)# 0.02
+sd(smoking_alcohol_expected_overlap) # 0.14
+
+
+
+# fisher's exact test
+# FADV_6HGHEDLV2_Percent<-barplot$Overlap[1]
+# FADV_6HGHEDLV2_rnd_Percent<-barplot$Overlap[4]
+# 
+# data<-matrix(c(FADV_6HGHEDLV2_Percent, 100-FADV_6HGHEDLV2_Percent,
+#                FADV_6HGHEDLV2_rnd_Percent, 100-FADV_6HGHEDLV2_rnd_Percent),
+#              ncol=2, byrow=T)
+# FADV_6HGHEDLV2<-fisher.test(round(data))
+
+# Permutation P value
+# count the number of permutated random gene lists which overlap by more on less than your real data
+# the code is broken down here for understanding but duplicated in a function aswell
+real_overlap<-length(intersect(unique(smoking_hits_table$IlmnID), unique(CT1.alcohol.hits$CpG))) 
+length(which(smoking_alcohol_expected_overlap>real_overlap))/length(smoking_alcohol_expected_overlap)
+
+
+
+### function giving a P value with some interpretation
+Overlap_pvalue_function<-function(genelist1, genelist2, permutated_overlaps, multiple_test_correction_number){
+  real_overlap<-length(intersect(unique(genelist1), unique(genelist2))) 
+  print(paste("Corrected P value for the question are the lists more overlapping than by chance?",
+              p.adjust(length(which(permutated_overlaps>=real_overlap))/length(permutated_overlaps), method="fdr", n=multiple_test_correction_number), sep=" "))
+  print(paste("Corrected P value for the question are the lists more distinct than by chance?",
+              p.adjust(length(which(permutated_overlaps<=real_overlap))/length(permutated_overlaps), method="fdr", n=multiple_test_correction_number), sep=" "))}
+
+## I had three gene lists to compare so a multiple test correction of 3
+Overlap_pvalue_function(unique(smoking_hits_table$IlmnID),unique(CT1.alcohol.hits$CpG), smoking_alcohol_expected_overlap,1)
+```
+
+The output provided:"Corrected P value for the question are the lists more overlapping than by chance is 1" and "Corrected P value for the question are the lists more distinct than by chance is 0.98".
+
+### E. Test for association of smoking to predicted cell type proportions
+
+We will use the predicted cell proportions (computed by Houseman blood deconvolution method) and abundance of naive/activated blood cell types (computed by Horvath Advanced Age Analysis) to test for association to smoking (defined as cigarettes per day)
+
+```{r echo=FALSE}
+## load outputs (as csv files)
+clock.output<-read.csv("EDDA_Advanced_Epigenetic_Age_Output.csv", header=T) # advanced epigenetic clock analysis output
+sampleFile <- ("EDDA_study_samplesheet_revised.txt") 
+str(sampleInfo <- read.delim(sampleFile,row.names=1,stringsAsFactors=F))
+# merge clock output with meta data
+sampleInfo$Sample_Name<-rownames(sampleInfo)
+# identical(as.character(clock.output$Sample_ID), sampleInfo$Sample_Name) #TRUE
+clock.output$Sample_ID<-as.character(clock.output$Sample_ID)
+clock.meta<-merge(clock.output, sampleInfo, by.x="Sample_ID", by.y="Sample_Name") # merge Horvath output with meta data
+clock.meta$Sample_Group<-as.character(clock.meta$Sample_Group) # re-structure Sample_Group variable
+clock.meta$Sample_Group<-gsub("patient_t2", "t2", clock.meta$Sample_Group)
+
+# pull Controls and T1 subset
+toMatch<-c("control", "patient")
+con.t1.samples <- grep(paste(toMatch,collapse="|"),clock.meta$Sample_Group)
+Con_T1_subset<-clock.meta[con.t1.samples,]
+
+
+# smoking association to predicted blood cell types
+Con_T1_subset_predicted_cells<-Con_T1_subset[,c("CD8T","CD4T","NK","Bcell","Mono","Gran","Sample_Group", "Sample_ID","Cigarettes_perDay")]
+head(Con_T1_subset_predicted_cells)
+head(melted_Con_T1_subset_predicted_cells<-melt(Con_T1_subset_predicted_cells, id.vars = c("Sample_Group", "Sample_ID","Cigarettes_perDay")))
+patient.sub<-gsub("patient", "t1", melted_Con_T1_subset_predicted_cells$Sample_Group)
+melted_Con_T1_subset_predicted_cells$Sample_Group<-patient.sub
+colnames(melted_Con_T1_subset_predicted_cells)<-c("Group", "SampleID", "Cigarettes.per.Day", "Cell","Predicted.Proportion")
+melted_Con_T1_subset_predicted_cells$Group<-as.factor(as.character(melted_Con_T1_subset_predicted_cells$Group))
+ggplot(melted_Con_T1_subset_predicted_cells, aes(Cigarettes.per.Day, Predicted.Proportion)) + geom_point(shape=21, fill="grey",colour="black", size=2, position=position_jitter(w=0.2)) + theme_bw() +facet_wrap(~Cell)
+cor.test(Con_T1_subset_predicted_cells$CD8T, Con_T1_subset_predicted_cells$Cigarettes_perDay, method="spearman") # p = 0.5858 for correlation btw CD8T and cigarettes per day
+cor.test(Con_T1_subset_predicted_cells$CD4T, Con_T1_subset_predicted_cells$Cigarettes_perDay, method="spearman") # p = 0.2066 for correlation btw CD4T and cigarettes per day
+cor.test(Con_T1_subset_predicted_cells$NK, Con_T1_subset_predicted_cells$Cigarettes_perDay, method="spearman") # p = 0.05543 for correlation btw NK and cigarettes per day
+# colnames(tt_subset)
+cor.test(Con_T1_subset_predicted_cells$Bcell, Con_T1_subset_predicted_cells$Cigarettes_perDay, method="spearman") # p = 0.1101 for correlation btw Bcell and cigarettes per day
+cor.test(Con_T1_subset_predicted_cells$Mono, Con_T1_subset_predicted_cells$Cigarettes_perDay, method="spearman") # p = 0.3824 for correlation btw Monocytes and cigarettes per day
+cor.test(Con_T1_subset_predicted_cells$Gran, Con_T1_subset_predicted_cells$Cigarettes_perDay, method="spearman") # p = 0.7125 for correlation btw granulocytes and cigarettes per day
+
+
+# smoking association to predicted blood cell types
+Con_T1_subset_predicted_cells<-Con_T1_subset[,c("PlasmaBlast", "CD8pCD28nCD45RAn", "CD8.naive", "CD4.naive",  "Sample_Group", "Sample_ID","Cigarettes_perDay")]
+head(Con_T1_subset_predicted_cells)
+head(melted_Con_T1_subset_predicted_cells<-melt(Con_T1_subset_predicted_cells, id.vars = c("Sample_Group", "Sample_ID","Cigarettes_perDay")))
+patient.sub<-gsub("patient", "t1", melted_Con_T1_subset_predicted_cells$Sample_Group)
+melted_Con_T1_subset_predicted_cells$Sample_Group<-patient.sub
+memory.sub<-gsub("CD8pCD28nCD45RAn", "CD8.memory", melted_Con_T1_subset_predicted_cells$variable)
+melted_Con_T1_subset_predicted_cells$variable<-memory.sub
+colnames(melted_Con_T1_subset_predicted_cells)<-c("Group", "SampleID", "Cigarettes.per.Day", "Cell","Abundance")
+melted_Con_T1_subset_predicted_cells$Group<-as.factor(as.character(melted_Con_T1_subset_predicted_cells$Group))
+ggplot(melted_Con_T1_subset_predicted_cells, aes(Cigarettes.per.Day, Abundance)) + geom_point(shape=21, fill="grey",colour="black", size=2, position=position_jitter(w=0.2)) + theme_bw() +facet_wrap(~Cell)
+cor.test(Con_T1_subset_predicted_cells$PlasmaBlast, Con_T1_subset_predicted_cells$Cigarettes_perDay, method="spearman") # p = 0.5279 for correlation btw CD8T and cigarettes per day
+cor.test(Con_T1_subset_predicted_cells$CD8pCD28nCD45RAn, Con_T1_subset_predicted_cells$Cigarettes_perDay, method="spearman") # p = 0.3776 for correlation btw memory CD8T cells and cigarettes per day
+cor.test(Con_T1_subset_predicted_cells$CD8.naive, Con_T1_subset_predicted_cells$Cigarettes_perDay, method="spearman") # p = 0.489 for correlation btw CD8T naive cells and cigarettes per day
+# colnames(tt_subset)
+cor.test(Con_T1_subset_predicted_cells$CD4.naive, Con_T1_subset_predicted_cells$Cigarettes_perDay, method="spearman") # p = 0.5422 for correlation btw CD4T naive cells and cigarettes per day
+```
+
+We conclude that there are no significant associations between smoking and  the predicted cell proportions (computed by Houseman blood deconvolution method) or abundance of naive/activated blood cell types (computed by Horvath Advanced Age Analysis)

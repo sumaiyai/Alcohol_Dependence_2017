@@ -1,0 +1,1122 @@
+EDDA Differential Methylation Analysis with Cell-type Corrected Data
+====================================================================
+## Author: Sumaiya Islam
+## Date Updated: March 31, 2016
+
+### A. Set up working directory & packages
+
+
+Here we re-run the differential DNA methylation analysis as before 
+
+We will initially set our working directory and load our libraries.
+```{r EDDA_load_libraries, include=FALSE, echo=FALSE}
+setwd("/home/sislam/EDDA")
+library(methylumi)
+library(gplots)
+library(marray)
+library(lumi)
+library(lattice)
+library(knitr)
+library(xtable)
+library(qvalue)
+library(sva)
+library(wateRmelon)
+library(reshape)
+library(ggplot2)
+library(RColorBrewer)
+library(grid)
+library(gridExtra)
+library(limma)
+library(DMRcate)
+library(RCurl)
+library(gtools)
+library(plyr)
+```
+
+### B. Load files
+
+#### We will be analyzing the ComBat-corrected dataset generated from the ComBat script. 
+
+We will load the cell type-corrected methylumi object. We determined previously from the 65 SNP profile that EDDA_59 and EDDA_70 are likely technical replicates (same DNA submitted twice). We will remove EDDA_59 as it is redundant to include both replicates.
+
+```{r EDDA_fileLoad, echo=FALSE}
+# load("EDDA.combat.RData") #load ComBat-corrected EDDA dataset
+# dim(EDDA.combat) # probes = 452266, samples = 72
+# 
+# # remove EDDA_59
+# sample.to.remove<-c("EDDA_59")
+# EDDA.cor <- EDDA.combat[,!(sampleNames(EDDA.combat))%in%sample.to.remove]
+# dim(EDDA.cor) # probes = 452266, samples = 71
+# table(EDDA.cor$Sample_Group)
+# # save(EDDA.cor, file="EDDA.cor.RData")
+
+# load("EDDA.cell.cor.RData")
+# dim(EDDA.cell.cor) # probes = 452266, samples = 72
+#  
+# # remove EDDA_59 as it constitutes a technical replicate to EDDA_70
+# sample.to.remove<-c("EDDA_59")
+# EDDA.cell.cor.rev <- EDDA.cell.cor[,!(sampleNames(EDDA.cell.cor))%in%sample.to.remove]
+# dim(EDDA.cell.cor.rev) # probes = 452266, samples = 71
+# table(EDDA.cell.cor.rev$Sample_Group)
+# # save(EDDA.cell.cor.rev, file="EDDA.cor.final.RData")
+
+load("EDDA.cor.final.RData")
+dim(EDDA.cell.cor.rev) # probes = 452266, samples = 71
+table(EDDA.cell.cor.rev$Sample_Group)
+
+# betas.matrix<-betas(EDDA.cell.cor.rev)
+# # write.csv(betas.matrix, "EDDA_Corrected_Betas_matrix.csv")
+# verified_CpGs<-c("cg07280807","cg18752527","cg21466315")
+# verified_CpG_betas<-betas.matrix[rownames(betas.matrix)%in%verified_CpGs,]
+# head(verified_CpG_betas)
+```
+
+### Test difference in mean DNA methylation between groups
+
+```{r echo=FALSE}
+mean.betas<-colMeans(betas(EDDA.cell.cor.rev))
+# identical(colnames(betas(EDDA.cell.cor.rev)),rownames(pData(EDDA.cell.cor.rev))) # TRUE
+meta.EDDA<-pData(EDDA.cell.cor.rev)
+meta.EDDA$mean.betas<-mean.betas
+meta.EDDA$Sample_Group<-as.factor(meta.EDDA$Sample_Group)
+head(meta.EDDA)
+ddply(meta.EDDA,~Sample_Group,summarise,mean=mean(mean.betas),sd=sd(mean.betas))
+# plot mean global DNAm differences between groups
+ggplot(meta.EDDA, aes(Sample_Group, mean.betas))+
+  geom_boxplot(aes(fill=as.factor(Sample_Group)),color="black", outlier.shape=NA)+
+  geom_point(shape=21, fill="grey",colour="black", size=3, position=position_jitter(w=0.2))+
+  theme_bw()+xlab("Sample Group")+ylab("Mean Global DNA methylation")  + scale_fill_manual(values=c("#d6604d","#4393c3", "#92c5de"), guide=FALSE)
+
+# test controls vs T1 mean global DNAm differences by Mann Whitney U test
+(mw.test.meanDNAm<-wilcox.test(meta.EDDA[which(meta.EDDA$Sample_Group=="control"), "mean.betas"],meta.EDDA[which(meta.EDDA$Sample_Group=="patient"), "mean.betas"])) # p = 0.04834
+# test controls vs T2 mean global DNAm differences by Mann Whitney U test
+(mw.test.meanDNAm<-wilcox.test(meta.EDDA[which(meta.EDDA$Sample_Group=="control"), "mean.betas"],meta.EDDA[which(meta.EDDA$Sample_Group=="t2"), "mean.betas"])) # p = 0.6053
+# test T1 vs T2 mean global DNAm differences by Wilcoxon paired signed-rank test
+(mw.test.meanDNAm.tt<-wilcox.test(meta.EDDA[which(meta.EDDA$Sample_Group=="patient"), "mean.betas"],meta.EDDA[which(meta.EDDA$Sample_Group=="t2"), "mean.betas"], paired=TRUE)) # p = 0.1515
+```
+
+ The difference between mean global DNA methylation between T1 and T2 samples is not significant (p = 0.1515, Wilcoxon paired signed-rank test). The difference between mean global DNA methylation between controls and T2 samples is not significant (p = 0.6053, Mann Whitney U-test). However, the difference in mean global DNA methylation between controls and T1 patient samples is marginally significant (p = 0.0483, Mann-Whitney U test). We need to investigate if this systemic global difference between controls and T1 patient samples represents a technical artifact (ie batch effect).
+
+### Test differences in meta variables (ie age and cigarettes per day between controls and patients)
+```{r echo = FALSE}
+meta<-pData(EDDA.cell.cor.rev)
+meta$Sample_Group <-as.factor(meta$Sample_Group)
+patient.subset<-meta[which(meta$Sample_Group=="patient"),]
+control.subset<-meta[which(meta$Sample_Group=="control"),]
+
+# test difference in age between controls and patients
+wilcox.test(patient.subset$Age, control.subset$Age, paired=FALSE) # p = 0.6623 
+## no significant age differences between controls and patients
+
+# test difference in cigarettes per day between controls and patients
+wilcox.test(patient.subset$Cigarettes_perDay, control.subset$Cigarettes_perDay, paired=FALSE) # p = 0.3751
+## no significant smoking differences between controls and patients
+```
+
+We observe no significant differences between controls and patient T1 samples for age and cigarettes per day. 
+
+### C. Differential DNA methylation analysis
+
+We will use linear regression analysis to test the following research questions:
+
+#### Question 1) What are the baseline differences between controls and patients at the start of the intervention?
+
+- To test this, need to perform unpaired testing of linear model for T1 patient samples vs controls (adjusted for necessary covariates such as age and cigarettes per day). 
+
+We will first subset the data to control and T1 patient samples. Then will check that age and cigarettes per day are not correlated (as they come up in the same top PC)---this will rule out possible colinearity in our model. Then we will fit a linear model for T1 patient samples vs controls (adjusted for covariates of age and cigarettes per day which were associated with top-ranking PCs in our PCA).
+
+```{r, echo=FALSE}
+# subset data to just control vs T1 patient samples
+all.dat<-EDDA.cell.cor.rev
+pData(all.dat)$Sample_Group<-as.character(pData(all.dat)$Sample_Group)
+pData(all.dat)$Sample_Group<-gsub("patient_t2", "t2", all.dat$Sample_Group)
+toMatch<-c("control", "patient")
+con.t1.samples <- grep(paste(toMatch,collapse="|"),all.dat$Sample_Group)
+Con_T1_subset<-all.dat[,con.t1.samples]
+
+# check if age and cigarettes per day are correlated
+# cor.test(all.dat$Age, all.dat$Cigarettes_perDay, method="spearman") # not correlated
+
+### Linear regression analysis with unpaired testing (adjusted for age and cigarettes per day)
+# make model matrix
+meta<-pData(Con_T1_subset)
+meta$Sample_Group<-as.factor(meta$Sample_Group)
+design.Con.T1<- model.matrix(~Sample_Group + Age + Cigarettes_perDay, meta)
+# fit model
+fit.Con.T1 <- lmFit(exprs(Con_T1_subset), design.Con.T1) # fit model to M-values
+# use Bayesian model to generate moderated statistics
+fit.Con.T1.moderated <- eBayes(fit.Con.T1)
+# generate topTable linear regression outputs
+head(topT.Con.T1.complete <- topTable(fit.Con.T1.moderated, coef="Sample_Grouppatient" , adjust = "BH",num=Inf))
+hist(topT.Con.T1.complete$P.Value, breaks=40, main="Unadj. P-val distribution for Control vs T1 Patient Differences", xlab="Unadjusted p-value", ylab="Frequency", col="deeppink4")
+```
+
+We observe a p-value distribution with a leftward skew for differential DNA methylation between controls and T1 patient samples. This suggests an enrichment of low p-values beyond expected by chance which is encouraging. We will next seek to identify hits. 
+
+```{r echo=FALSE}
+## Delta beta between groups (controls vs T1 patients)
+#### Ask Meg/Rachel: Should I have used the adjusted beta values???? According to Meg, adjusting beta values for covariates does NOT report measured DNA methylation values; she is more comfortable showing measured DNA methylation values.
+betas_Con.T1<-betas(Con_T1_subset)
+betas_Con.T1.or<-betas_Con.T1[match(rownames(topT.Con.T1.complete), rownames(betas_Con.T1)), ]
+# identical(rownames(betas_Con.T1.or), rownames(topT.Con.T1.complete)) # TRUE
+meta_Con.T1<-pData(Con_T1_subset)
+# identical(colnames(betas_Con.T1.or), rownames(meta_Con.T1)) # TRUE
+meta_Con.T1$Sample_Group<-as.factor(meta_Con.T1$Sample_Group)
+Patient_T1_AvgB<-rowMeans(betas_Con.T1.or[,which(meta_Con.T1$Sample_Group=="patient")], na.rm=T)
+Controls_AvgB<-rowMeans(betas_Con.T1.or[,which(meta_Con.T1$Sample_Group=="control")], na.rm=T)
+topT.Con.T1.complete$Patient_T1_AvgB<-Patient_T1_AvgB
+topT.Con.T1.complete$Controls_AvgB<-Controls_AvgB
+topT.Con.T1.complete$deltabeta<-Controls_AvgB-Patient_T1_AvgB
+head(topT.Con.T1.complete)
+
+# Tabulate hits at different thresholds
+threshold.hits<-function(fdr.threshold, deltabeta.threshold){
+  hits.count<-topT.Con.T1.complete[which(topT.Con.T1.complete$adj.P.Val<=fdr.threshold & abs(topT.Con.T1.complete$deltabeta)>=deltabeta.threshold),]
+  return(nrow(hits.count))
+}
+
+
+hits.05.0<-threshold.hits(0.05,0)
+hits.01.0<-threshold.hits(0.10,0)
+hits.2.0<-threshold.hits(0.20,0)
+hits.05.05<-threshold.hits(0.05,0.05)
+hits.1.05<-threshold.hits(0.1,0.05)
+hits.2.05<-threshold.hits(0.2,0.05)
+hits.05.1<-threshold.hits(0.05,0.1)
+hits.1.1<-threshold.hits(0.1,0.1)
+hits.2.1<-threshold.hits(0.2,0.1)
+
+```
+
+Table of Hits  | FDR < 0.2| FDR < 0.1| FDR < 0.05|
+-------------- | ---------|----------|-----------|
+dB = 0         |17342     | 1210     |47         |
+dB = 0.05      |305       | 59       |5          |
+dB = 0.1       |17        | 4        |0          |        
+
+We can see that as we move to the right across the table, we have increasing statistical stringency and as we move down the table, we have increasing biological potency. We will select an FDR threshold of 0.1 and delta beta threshold of 0.05 (59 hits) and plot those hits as a volcano plot below:
+
+We will plot these hits as a volcano plot. 
+
+```{r echo=FALSE, fig.height=5, fig.width=9}
+## compute nominal p-value threshold for FDR = 0.05
+CT1.hits.05<-topT.Con.T1.complete[which(topT.Con.T1.complete$adj.P.Val<=0.05) ,]
+tail(CT1.hits.05)
+# nominal p-value is 5.18e-06 for fdr = 0.05 (last entry for tail of CT1.hits.05)
+## compute nominal p-value threshold for FDR = 0.1
+CT1.hits.1<-topT.Con.T1.complete[which(topT.Con.T1.complete$adj.P.Val<=0.1) ,]
+tail(CT1.hits.1)
+# nominal p-value is 0.000267 for fdr = 0.1 (last entry for tail of CT1.hits.1)
+## compute nominal p-value threshold for FDR = 0.2
+CT1.hits.2<-topT.Con.T1.complete[which(topT.Con.T1.complete$adj.P.Val<=0.2) ,]
+tail(CT1.hits.2)
+# nominal p-value is 0.00767 for fdr = 0.2 (last entry for tail of CT1.hits.2)
+
+## assign colours for each point in plot based on statistical and biological significance thresholds
+differential.dat<-topT.Con.T1.complete
+color3<-sapply(1:nrow(differential.dat), function(x) if(differential.dat$adj.P.Val[x]<=0.1){
+  if(abs(differential.dat$deltabeta[x])>0.05){
+    if(differential.dat$deltabeta[x]>0.05){"Greater methylation in Control\n(with Potential Biological Impact)"}else{"Less methylation in Control\n (with Potential Biological Impact)"}
+    }else{if(differential.dat$deltabeta[x]>0){"Greater methylation in Control"}else{"Less methylation in Control"}}}else{"Not Significantly Different"})
+differential.dat$Interesting_CpG3<-color3
+
+
+#Amazing Volcano Plot Courtesy of Yours Truly, Rachel Edgar
+library(scales)
+ggplot(differential.dat, aes(deltabeta, -log10(P.Value), color=Interesting_CpG3))+geom_point(shape=19, size=1)+theme_bw()+scale_color_manual(values=c(muted("blue", l=80, c=30),"blue",muted("red", l=70, c=40),"red","grey"),name="DNA methylation Differences Between \nControl and T1 Patient Samples")+geom_vline(xintercept=c(-0.05, 0.05), color="grey60", linetype="dashed")+geom_hline(yintercept=-log10(0.000267), color="grey60", linetype="dashed")+ylab("-log10(p-value)")+xlab("DNA Methylation Difference (Controls - T1)")+xlim(-0.125, 0.125)+theme(axis.text = element_text(size =14, color="black"),
+          axis.title = element_text(size =20),
+          legend.text = element_text(size =14),
+          legend.title = element_text(size =20))+ 
+  guides(color = guide_legend(override.aes = list(size = 4)))
+```
+
+In the volcano plot we identified 59 significant hits between controls and T1 patient samples (FDR < 0.1, horizontal grey line).
+
+* Note: In this volcano plot, the y-axis shows -log10 of the nominal p-values (not the adjusted p-values). However the horizontal gray line depicts the threshold of adjusted p-value = 0.1 (relating to nominal p-value of ~ 0.000267). The coloured hits are still shown for FDR < 0.1 and absolute delta beta difference of > 0.05. 
+
+We will plot 10 of the top hits. 
+
+```{r echo=FALSE}
+# pull out 59 hits at FDR < 0.1 and DNA methylation difference > 0.05
+CT1.hits<-topT.Con.T1.complete[which(topT.Con.T1.complete$adj.P.Val<=0.1 & abs(topT.Con.T1.complete$deltabeta)>=0.05) ,]
+hits.CT1.betas<-betas_Con.T1[rownames(CT1.hits[1:10,]),]
+Con.T1.hits.melted<-melt(hits.CT1.betas)
+meta_Con.T1$Sample_Name<-rownames(meta_Con.T1)
+
+C1.plot<-merge(Con.T1.hits.melted, meta_Con.T1, by.x="X2", by.y="Sample_Name")
+
+
+ggplot(C1.plot, aes(Sample_Group, value, fill=factor(Sample_Group)))  + geom_boxplot(outlier.size = NA)   +theme_bw() + facet_wrap(~X1, ncol = 5) +ylim(0,1) + scale_fill_manual(name = "Sample Group", values = c("#d6604d", "#4393c3"), labels = c("Control", "Patient (T1)")) + xlab("Sample Group") + ylab("DNA methylation")
+# Plot distribution of delta betas of hits
+# ggplot(hits.05, aes(deltabeta)) + geom_histogram(binwidth=0.01) + theme_bw() + ylab("Frequency") + xlab("DNA methylation difference between groups (Delta Beta)") + ggtitle("Distribution of DNA methylation differences between groups")
+```
+
+
+We will now map these 59 hits to their underlying gene(s) and/or genomic features. Annotation of probe hits is a modified adaption of CGI annotation used in Edgar et al. 2014, Epigenetics & Chromatin. Brief description of annotation (from R. Edgar): There are multiple approaches to associating a CpG with a gene, such as the closest TSS (Price et al. 2013, Epigenetics & Chromatin), presence in a gene’s body or promoter (Bibikova et al. 2011, Genomics). Here, we have used a CpG to gene association definition that allows for mulitple gene features, as well as multiple genes. Our inclusive associations is an attempt to capture all possible roles of a CpG in gene regulation. Specifically, Refseq genes were downloaded from UCSC, including all isoforms of a gene. The gene list included 24,047 genes and a total of 33,431 unique transcription units. The 485,512 CpGs on the 450K array associated with 23,018 genes (43.8% intragenic, 34.2% promoter, 2.5% 3’ region, 19.5% intergenic).
+
+```{r echo=FALSE}
+load("Gene_CpG_Relations_updatejune2015.RData") # annotations of all 450K probes from Rachel, contains 688909 features (this is more than 485,512 methylation probes because some probes are mapped to multiple isoforms)
+
+load("Price_annotation.RData") #annotations based on Price et al. 2013 Epigenetics & Chromatin
+annotation$CpG<-rownames(annotation)
+
+# associate probe hits to genes
+hits.CT1.genes<-Gene_CpG_Relations_update[which(Gene_CpG_Relations_update$Probe_ID %in% rownames(CT1.hits)),] # probe hits mapped to genes
+# length(unique(hits.CT1.genes$Probe_ID)) # should be same as the number of hits (ie 59)
+# length(unique(hits.CT1.genes$gene)) # hits map to 39 genes
+
+
+hits.CT1.genes.or<-hits.CT1.genes[match(rownames(CT1.hits),hits.CT1.genes$Probe_ID),]
+identical(hits.CT1.genes.or$Probe_ID, rownames(CT1.hits)) # TRUE
+head(hits.CT1.summary.cor2<-data.frame(Probe_ID=hits.CT1.genes.or$Probe_ID, Gene=hits.CT1.genes.or$gene, Region=hits.CT1.genes.or$region, P.Value=CT1.hits$P.Value, Adj.P.Value= CT1.hits$adj.P.Val,Delta_beta=CT1.hits$deltabeta, Patient_T1_Avgbeta=CT1.hits$Patient_T1_AvgB, Control_Avgbeta=CT1.hits$Controls_AvgB))
+dim(hits.CT1.summary.cor2)
+# write.csv(hits.CT1.summary.cor2, "Corrected_Hits_Controls_vs_T1_FDR.1.revised.csv")
+table(as.factor(as.character(hits.CT1.summary.cor$Gene)))
+
+# Plot enrichment (as fold change) for each genomic region using source code developed by Rachel Edgar
+source("Gene_enrichment_fold_change_permutation_pvalue_function.R")
+
+# define background of CpGs (whatever you filtered the 485577 down to for this analysis) and the CpG list of interest (hits)
+background.CT1<-rownames(topT.Con.T1.complete)
+hits.CT1<-rownames(CT1.hits)
+
+## plot fold enrichment and the permutation pvalues
+#take the hit list, the background, and the number of permutations
+CGI_Gene_permutation_enrichment(hits.CT1,background.CT1, 1000, -3,2)
+
+```
+
+We have mapped the 59 differentially methylated sites between controls and T1 patient samples (at FDR < 0.1) to their respective gene(s) and underyling genomic region. We have plotted the enrichment of hits as a fold change in various genomic regions. Based on permutation testing, only the "None" category was significantly enriched for hits (p = 0.018). 
+Note that the gene SRPK3 has 4 underlying hits in the promoter region, perhaps signifying a differentially methylated region?
+
+We will plot the potential DMR in the SRPK3 gene (chrX:153046386-153046482):
+
+```{r echo=FALSE}
+
+# define a function to plot target DMRs
+plot_DMR<-function(methylumi.object, Sample.Group, dmr.chr, dmr.start.coord, dmr.end.coord){
+  annotation<-fData(methylumi.object)
+inrange<-annotation[which(annotation$CHR==as.character(dmr.chr) & annotation$MAPINFO>=dmr.start.coord-100 & annotation$MAPINFO<=dmr.end.coord+100),c("TargetID","MAPINFO","CHR")]
+betas.matrix<-betas(methylumi.object)
+CpG_betas<- t(betas.matrix[rownames(inrange),])
+plot_dat <- data.frame(CpG.Betas = CpG_betas, Group = Sample.Group)
+plot_dat <- data.frame(plot_dat[,order(colnames(plot_dat))])
+test <- melt(plot_dat, id.vars = c("Group"))
+mapinfodat <- data.frame(CpG = rep(rownames(inrange), ncol(betas.matrix)), MAPINFO =
+rep(inrange$MAPINFO, ncol(betas.matrix)))
+test1 <- mapinfodat[order(mapinfodat$CpG),]
+plot_dat <- cbind(test,test1$MAPINFO)
+colnames(plot_dat)<-c("Group", "variable", "value", "Coordinate")
+plot_dat$Group <- as.factor(plot_dat$Group)
+stat_sum_single <- function(fun, geom="point", ...) {
+  stat_summary(fun.y=fun, geom=geom, size = 2,...)
+}
+ggplot(plot_dat, aes(x = Coordinate , y = value, fill = Group,colour =
+Group, group = Group)) +
+  theme_bw()+
+  geom_point(size =3, pch=21, color = "black") +
+  stat_sum_single(mean, geom="line") +
+  scale_fill_manual(values=c("#d6604d",  "#4393c3"))+
+  scale_color_manual(values=c("#d6604d",  "#4393c3"))+
+  theme(axis.text=element_text(colour="black", size = 10),
+        axis.title=element_text(face = "bold", colour="black", size = 10),
+title=element_text(face = "bold", colour="black", size = 16),
+legend.key.size = unit(1, "cm"), legend.title = element_text(size
+= 10),
+        legend.text = element_text(size = 10)) +
+  xlab("Genomic Coordinate")+
+  ylab("DNA Methylation")
+}
+
+
+# plot DMR chrX:153046386-153046482 
+plot_DMR(Con_T1_subset, as.factor(Con_T1_subset$Sample_Group), "X", 153046386, 153046482)
+```
+
+We can see that there appears to be a DMR in the promoter region (chrX:153046386-153046482) of SRPK3 gene.
+
+We will use a DMR-detection method called DMRcate to independently assess if there are any DMRs between controls and T1 patient samples.
+
+### DMRCate: Identification of DMRs
+
+De novo identification and extraction of differentially methylated regions (DMRs) in the human
+genome using Illumina HM450K Beadchip data. DMRcate extracts and annotates differentially methylated
+regions (DMRs) using an array-bias corrected smoothed estimate.  Functions are provided for filtering probes possibly confounded by SNPs and cross-hybridisation. Includes GRanges generation and plotting functions.
+
+* Using Nicole Gladish's updated script for DMRcate
+
+```{r}
+# get DNA methylation data
+Mvals.CT1<-exprs(Con_T1_subset) # M-values for DMRcate
+betas.CT1<-betas(Con_T1_subset)
+str(Mvals.CT1)
+
+# make model matrix
+meta<-pData(Con_T1_subset)
+meta$Sample_Group<-as.factor(meta$Sample_Group)
+design.Con.T1<- model.matrix(~Sample_Group + Age + Cigarettes_perDay, meta)
+
+# perform DMRcate
+CT1.myannotation <- cpg.annotate(datatype="array", Mvals.CT1, analysis.type="differential", design=design.Con.T1, coef=2, fdr=0.05) # annotate CpGs with their chromosome position and test statistic (fdr cutoff isn't really used; all probes are passed through for DMR generation in next step)
+CT1.dmrcoutput <- dmrcate(CT1.myannotation, lambda=1000, C=2, pcutoff =0.05) # here you can change the FDR and beta cutoffs; in this case, only FDR < 0.05 has been specified by us while other parameters are set to default values recommended by DMRCate package creators 
+CT1.results.ranges <- extractRanges(CT1.dmrcoutput, genome="hg19") #takes a dmrcate.output and produces the corresponding GRanges object; NOTE that p.value is actually FDR
+length(CT1.results.ranges) #6973 DMRs at FDR of 0.05
+
+### --> NEXT STEP - pulling out CpGs, individual beta FC, and making a table that can be saved as .txt ###
+
+# pulling out the significant CpGs from the DMRs
+fdat <- fData(Con_T1_subset)
+fdat$CHR <- as.character(fdat$CHR)
+
+sig.cpgs <- lapply(1:length(CT1.results.ranges), function(x){
+  coords <- names(ranges(CT1.results.ranges))[x]
+  chr <- sub(":.*", "", coords) 
+  chr <- sub("chr", "", chr)
+  bookends <- sub(".*:", "", coords)
+  startcpg <- as.integer(sub("-.*", "", bookends))
+  stopcpg <- as.integer(sub(".*-", "", bookends))
+  cpgs <- rownames(fdat)[fdat$CHR %in% chr & fdat$MAPINFO >= 
+                             startcpg & fdat$MAPINFO <= stopcpg]
+})
+
+sig.cpgs.list <- unlist(sig.cpgs)
+
+#Making a dataframe based on CpGs from ranges object and attaching map info and DMRcate statistics. 
+
+
+dmrinput <- CT1.dmrcoutput$input
+head(sub_dmrinput <- dmrinput[as.character(dmrinput$ID) %in% sig.cpgs.list,])
+head(sub_fdat <- fdat[as.character(fdat$ILMNID) %in% sig.cpgs.list,])
+merged_dmrinput_fDat<-merge(sub_dmrinput, sub_fdat, by.x = "ID", by.y = "ILMNID")
+
+# get toptable with computed delta beta and add to merged_dmrinput_fDat
+deltabeta.ordered<-topT.Con.T1.complete[as.character(merged_dmrinput_fDat$ID),]
+identical(rownames(deltabeta.ordered), as.character(merged_dmrinput_fDat$ID))
+merged_dmrinput_fDat$delta_beta<-deltabeta.ordered$deltabeta
+head(merged_dmrinput_fDat)
+
+sig.cpgs.df <- data.frame(cpg=merged_dmrinput_fDat$ID, 
+                          FC = merged_dmrinput_fDat$betafc,
+                          FDR = merged_dmrinput_fDat$fdr,
+                          Gene = merged_dmrinput_fDat$UCSC_REFGENE_NAME,
+                          pvalue = merged_dmrinput_fDat$raw,
+                          chr = merged_dmrinput_fDat$CHR.x,
+                          position = merged_dmrinput_fDat$MAPINFO,
+                          deltabeta = merged_dmrinput_fDat$delta_beta)
+
+
+# Assigning the correct DMR to each CpG
+
+sig.cpg.dmr <- lapply(1:nrow(sig.cpgs.df), function(x){
+  print(x)
+  a<- which(sub(":.*", "", names(ranges(CT1.results.ranges))) == sig.cpgs.df$chr[x] & 
+              start(ranges(CT1.results.ranges)) <= sig.cpgs.df$position[x] & 
+              end(ranges(CT1.results.ranges)) >= sig.cpgs.df$position[x])
+  names(ranges(results.ranges))[a]
+})
+
+sig.cpgs.df$dmr <- unlist(sig.cpg.dmr)
+
+# This code adds the mean, max and min delta beta values for each DMR.
+
+mean_max_DB <- data.frame(deltabeta=sig.cpgs.df$deltabeta, 
+                          dmr = sig.cpgs.df$dmr)
+test <- aggregate(.~dmr, data=mean_max_DB, mean)
+colnames(test) <- c("dmr", "mean_DB")
+test.max <- aggregate(.~dmr, data=mean_max_DB, max)
+colnames(test.max) <- c("dmr", "max_DB")
+test.min <- aggregate(.~dmr, data=mean_max_DB, min)
+colnames(test.min) <- c("dmr", "min_DB")
+DB_info <- merge(test, test.max, by = "dmr")
+DB_info <- merge(DB_info, test.min, by = "dmr")
+head(DB_info)
+
+# Making a second table with DMR info.
+
+results <- CT1.dmrcoutput$results
+
+#getting the mean for the DMR - you could do other manipulations here as well 
+dmr.mean.df <- lapply(1:length(unique(sig.cpgs.df$dmr)), function(x) {
+  mean(sig.cpgs.df$FC[which(sig.cpgs.df$dmr == unique(sig.cpgs.df$dmr)[x])])
+})
+
+dmr.df <- data.frame(dmr = unique(sig.cpgs.df$dmr),
+                     meanbetafc = unlist(dmr.mean.df))
+dmr.df <- dmr.df[order(match(dmr.df$dmr, results$coord)),]
+identical(as.character(dmr.df$dmr), results$coord)
+dmr.df$dmr <- as.character(dmr.df$dmr)
+results <- merge(results, dmr.df, by.x = "coord", by.y = "dmr") 
+results$chr <- sub(":.*", "", results$coord)
+bookends <- sub(".*:", "", results$coord)
+results$start <- as.integer(sub("-.*", "", bookends))
+results$end <- as.integer(sub(".*-", "", bookends))
+results$width <- (results$end - results$start) + 1
+results <- merge(results, DB_info, by.x = "coord",by.y = "dmr")
+head(results) 
+
+## Filter DMRs to those with mean delta beta difference > 0.05
+filtered.DMR.results<-results[which(abs(results$mean_DB)>0.05),]
+head(filtered.DMR.results) # 29 significant DMRs at FDR < 0.05 and mean delta beta difference > 0.05
+CT1.sig.DMRs<-filtered.DMR.results
+# save(CT1.sig.DMRs, file = "Significant_DMRs_Controls_vs_T1.RData")
+# write.csv(CT1.sig.DMRs, file = "Significant_DMRs_Controls_vs_T1.csv", row.names = F)
+
+
+## Determine how many significant hits are underlying the probes of these significant DMRs?
+CT1.sig.dmr.sites<-sig.cpgs.df[which(sig.cpgs.df$dmr%in%filtered.DMR.results$coord),] # 153 CpGs underlying the 29 significant DMRs
+# write.csv(CT1.sig.dmr.sites, file = "Significant_Sites_of_DMRs_Controls_vs_T1.csv", row.names = F)
+CT1.sig.cpgs.hits.overlap<-sig.dmr.sites[which(sig.dmr.sites$cpg%in%rownames(CT1.hits)),] # 8 CpGs in the site-specific hits within the significant DMRs
+# write.csv(CT1.sig.cpgs.hits.overlap, file = "Overlapping_Hits_in_DMRs_Controls_vs_T1.csv", row.names = F)
+
+```
+
+We identified 29 significant DMRs at FDR < 0.05 and mean delta beta difference > 0.05. These DMRs had 153 underlying CpGs. 8 of these CpGs were also identified as significantly different in the site-specific linear modeling analysis between controls and T1 patients. Importantly, the SRPK3 region was identified in both site-specific and DMR detection by DMRcate.
+
+We will plot the SRPK3 DMR as an example. 
+
+```{r echo=FALSE}
+# plot DMR chrX:153046386-153046482 
+plot_DMR(Con_T1_subset, as.factor(Con_T1_subset$Sample_Group), "X", 153046175, 153047707)
+```
+
+
+Finally we will check if any of these identified hits overlap with XY cross-hybridizing probes that non-specifically bind to the sex chromosomes
+
+```{r echo=FALSE}
+xy_hit_index <- which(fData(EDDA.cell.cor.rev)$XY_Hits == "XY_YES")
+dim(XY_crosshybrid_probes <- EDDA.cell.cor.rev[xy_hit_index, ])
+head(featureNames(XY_crosshybrid_probes))
+intersect(featureNames(XY_crosshybrid_probes), as.character(hits.CT1.summary.cor$Probe_ID))
+```
+
+We observe there is only a single hit (cg15841511; intergenic CpG) that overlaps with XY cross-hybridizing probes. 
+
+#### Question 2) What post-intervention DNA methylation alterations occur?
+
+- To test this, need to perform paired testing of linear model for T2 vs T1 patient samples
+
+We will first subset the data to T1 and T2 patient samples. Then we will fit a linear model for T1 vs T2 patient samples.
+
+```{r, echo=FALSE}
+# subset data to just T1 vs T2 patient samples
+toMatch2<-c("patient", "t2")
+tt.samples <- grep(paste(toMatch2,collapse="|"),all.dat$Sample_Group)
+tt_subset<-all.dat[,tt.samples]
+
+
+### Linear regression analysis with paired testing 
+# make model matrix
+meta.tt<-pData(tt_subset)
+meta.tt$Sample_Group<-as.factor(meta.tt$Sample_Group)
+meta.tt$Sample_Name<-colnames(exprs(tt_subset))
+meta.tt$Patient_ID<-c("69", "66", "103", "67", "89", "84", "120", "47", "85", "47", "49", "123", "31", "31", "107", "122", "87", "67", "123", "87", "103", "69", "61", "83", "66", "49", "104", "121", "61", "121", "107", "64","83", "104", "100", "105", "82", "82", "105", "68", "100", "89", "84", "68", "120", "85", "64", "122")
+meta.tt$Patient_ID<-as.factor(meta.tt$Patient_ID)
+pData(tt_subset)<-meta.tt
+design.tt<- model.matrix(~Sample_Group + Patient_ID, meta.tt)
+# fit model
+fit.tt <- lmFit(exprs(tt_subset), design.tt) # fit model to M-values
+# use Bayesian model to generate moderated statistics
+fit.tt.moderated <- eBayes(fit.tt)
+# generate topTable linear regression outputs
+topT.tt.complete <- topTable(fit.tt.moderated, coef="Sample_Groupt2" , adjust = "BH",num=Inf)
+hist(topT.tt.complete$P.Value, breaks=40, main="Unadj. P-val distribution for T1 vs T2 Differences", xlab="Unadjusted p-value", ylab="Frequency", col="blue")
+```
+
+
+We observe a p-value distribution with a leftward skew for differential DNA methylation between controls and T1 patient samples. This suggests an enrichment of low p-values beyond expected by chance which is encouraging. We will next seek to identify hits at various FDR (statistical) thresholds and different delta beta (dB) (biological) thresholds:
+
+
+```{r echo=FALSE}
+# calculate delta betas from two beta matrices of matched T1 vs T2 samples in the same order
+delta.betas.calc<-function(t1,t2){
+  summation<-unlist(lapply(1:nrow(t1), function(cpg){
+    mean(t1[cpg,]-t2[cpg,])}))
+}
+
+# re-order t1 and t2 samples in same order in two separate datasets
+tt_subset.or<-tt_subset[,order(tt_subset$Patient_ID)]
+t1.dat<-tt_subset.or[,which(tt_subset.or$Sample_Group=="patient")]
+t2.dat<-tt_subset.or[,which(tt_subset.or$Sample_Group=="t2")]
+# identical(t1.dat$Patient_ID, t2.dat$Patient_ID) # TRUE
+# match the probe order of toptable with ordered beta matrices of t1 and t2 samples
+t1.betas<-betas(t1.dat)
+t1.betas.or<-t1.betas[match(rownames(topT.tt.complete), rownames(t1.betas)),]
+t2.betas<-betas(t2.dat)
+t2.betas.or<-t2.betas[match(rownames(topT.tt.complete), rownames(t2.betas)),]
+# calculate delta betas and add as column in toptable
+topT.tt.complete$deltabeta<-delta.betas.calc(t1.betas.or, t2.betas.or)
+# compute DNA methylation average per group
+tt_T1_avgB<-rowMeans(t1.betas.or)
+tt_T2_avgB<-rowMeans(t2.betas.or)
+topT.tt.complete$T1_avgbeta<-tt_T1_avgB
+topT.tt.complete$T2_avgbeta<-tt_T2_avgB
+
+# Tabulate hits at different thresholds
+threshold.hits<-function(fdr.threshold, deltabeta.threshold){
+  hits.count<-topT.tt.complete[which(topT.tt.complete$adj.P.Val<=fdr.threshold & abs(topT.tt.complete$deltabeta)>=deltabeta.threshold),]
+  return(nrow(hits.count))
+}
+
+
+hits.05.0<-threshold.hits(0.05,0)
+hits.1.0<-threshold.hits(0.10,0)
+hits.2.0<-threshold.hits(0.20,0)
+hits.05.05<-threshold.hits(0.05,0.05)
+hits.1.05<-threshold.hits(0.1,0.05)
+hits.2.05<-threshold.hits(0.2,0.05)
+hits.05.1<-threshold.hits(0.05,0.1)
+hits.1.1<-threshold.hits(0.1,0.1)
+hits.2.1<-threshold.hits(0.2,0.1)
+```
+
+Table of Hits  | FDR < 0.2| FDR < 0.1| FDR < 0.05|
+-------------- | ---------|----------|-----------|
+dB = 0         |15960     | 3180     |64         |
+dB = 0.05      |63        | 48       |2          |
+dB = 0.1       |0         | 0        |0          |        
+
+We can see that as we move to the right across the table, we have increasing statistical stringency and as we move down the table, we have increasing biological potency. We will select an FDR threshold of 0.1 and delta beta threshold of 0.05 (48 hits) and plot those hits as a volcano plot below:
+
+```{r echo=FALSE, fig.height=5, fig.width=9}
+
+## compute nominal p-value threshold for FDR = 0.05
+tt.hits.05<-topT.tt.complete[which(topT.tt.complete$adj.P.Val<=0.05) ,]
+tail(tt.hits.05)
+# nominal p-value is 7.04 e-06 for fdr = 0.05 (last entry for tail of tt.hits.05)
+## compute nominal p-value threshold for FDR = 0.1
+tt.hits.1<-topT.tt.complete[which(topT.tt.complete$adj.P.Val<=0.1) ,]
+tail(tt.hits.1)
+# nominal p-value is 0.000703 for fdr = 0.1 (last entry for tail of tt.hits.1)
+## compute nominal p-value threshold for FDR = 0.2
+tt.hits.2<-topT.tt.complete[which(topT.tt.complete$adj.P.Val<=0.2) ,]
+tail(tt.hits.2)
+# nominal p-value is 0.00706 for fdr = 0.2 (last entry for tail of tt.hits.2)
+
+## assign colours for each point in plot based on statistical and biological significance thresholds
+differential.dat<-topT.tt.complete
+color3<-sapply(1:nrow(differential.dat), function(x) if(differential.dat$adj.P.Val[x]<=0.1){
+  if(abs(differential.dat$deltabeta[x])>0.05){
+    if(differential.dat$deltabeta[x]>0.05){"Greater methylation in T1\n(with Potential Biological Impact)"}else{"Less methylation in T1\n (with Potential Biological Impact)"}
+    }else{if(differential.dat$deltabeta[x]>0){"Greater methylation in T1"}else{"Less methylation in T1"}}}else{"Not Significantly Different"})
+differential.dat$Interesting_CpG3<-as.factor(color3)
+levels(differential.dat$Interesting_CpG3)
+
+
+#Amazing Volcano Plot Courtesy of Yours Truly, Rachel Edgar
+library(scales)
+ggplot(differential.dat, aes(deltabeta, -log10(P.Value), color=Interesting_CpG3))+geom_point(shape=19, size=1)+theme_bw()+scale_color_manual(values=c(muted("blue", l=80, c=30),muted("red", l=70, c=40),"red","grey"),name="DNA Methylation Differences Between \nMatched T1 vs T2 Patient Samples")+geom_vline(xintercept=c(-0.05, 0.05), color="grey60", linetype="dashed")+geom_hline(yintercept=-log10(0.000703), color="grey60", linetype="dashed")+ylab("-log10(p-value)")+xlab("DNA Methylation Difference (T1 - T2)")+xlim(-0.125, 0.125)+theme(axis.text = element_text(size =14, color="black"),
+          axis.title = element_text(size =20),
+          legend.text = element_text(size =14),
+          legend.title = element_text(size =20))+ 
+  guides(color = guide_legend(override.aes = list(size = 4)))
+```
+
+We can see from the volcano plot that all 48 statistically signicant sites (at FDR < 0.1) exhibit less methylation in T1 vs T2 (dark red points).
+
+* Note: In this volcano plot, the y-axis shows -log10 of the nominal p-values (not the adjusted p-values). However the horizontal gray line depicts the threshold of adjusted p-value = 0.1 (relating to nominal p-value of ~ 0.0007). The coloured hits are still shown for FDR < 0.1 and absolute delta beta difference of > 0.05. 
+
+We will plot 10 of the top hits.
+
+```{r echo=FALSE}
+tt.hits.1<-topT.tt.complete[which(topT.tt.complete$adj.P.Val<=0.1 & abs(topT.tt.complete$deltabeta)>=0.05),] # 48 hits
+betas.tt<-betas(tt_subset)
+hits.tt.betas<-betas.tt[rownames(tt.hits.1[1:10,]),]
+tt.hits.melted<-melt(hits.tt.betas)
+meta_tt<-pData(tt_subset)
+meta_tt$Sample_Name<-rownames(meta_tt)
+
+tt.plot<-merge(tt.hits.melted, meta_tt, by.x="X2", by.y="Sample_Name")
+
+ggplot(tt.plot, aes(Sample_Group, value, fill=factor(Sample_Group)))  + geom_boxplot(outlier.size = NA)   +theme_bw() + facet_wrap(~X1, ncol = 5) +ylim(0,1) + scale_fill_manual(name = "Sample Group", values = c("#4393c3", "#92c5de"), labels = c( "Patient (T1)", "Patient(T2)")) + ylab("DNA methylation") + xlab("Sample Group")
+# Plot distribution of delta betas of hits
+# ggplot(hits.05, aes(deltabeta)) + geom_histogram(binwidth=0.01) + theme_bw() + ylab("Frequency") + xlab("DNA methylation difference between groups (Delta Beta)") + ggtitle("Distribution of DNA methylation differences between groups")
+```
+
+We will map our 48 hits (FDR < 0.1, delta beta > 0.05) to their underlying genes and genomic features/regions. 
+
+```{r echo=FALSE}
+# associate probe hits to genes
+
+(hits.tt.genes<-Gene_CpG_Relations_update[which(Gene_CpG_Relations_update$Probe_ID %in% rownames(tt.hits.1)),]) # probe hits mapped to genes
+# write.csv(hits.tt.genes, file="T1 vs T2 Differential Hits.csv")
+length(unique(hits.tt.genes$Probe_ID)) # should be same as the number of hits (ie 48)
+length(unique(hits.tt.genes$gene)) # hits map to 42 genes
+
+hits.tt.genes.or<-hits.tt.genes[match(rownames(tt.hits.1),hits.tt.genes$Probe_ID),]
+identical(hits.tt.genes.or$Probe_ID, rownames(tt.hits.1)) # TRUE
+head(hits.tt.summary.cor2<-data.frame(Probe_ID=hits.tt.genes.or$Probe_ID, Gene=hits.tt.genes.or$gene, Region=hits.tt.genes.or$region, P.Value=tt.hits.1$P.Value, Adj.P.Value= tt.hits.1$adj.P.Val, Delta_beta=tt.hits.1$deltabeta, T1_avgbeta=tt.hits.1$T1_avgbeta, T2_avgbeta=tt.hits.1$T2_avgbeta))
+# write.csv(hits.tt.summary.cor2, "Corrected_Hits_T1_vs_T2_FDR.1.revised.csv")
+
+# Plot enrichment (as fold change) for each genomic region using source code developed by Rachel Edgar
+source("Gene_enrichment_fold_change_permutation_pvalue_function.R")
+
+# define background of CpGs (whatever you filtered the 485577 down to for this analysis) and the CpG list of interest (hits)
+background.tt<-rownames(topT.tt.complete)
+hits.tt<-rownames(tt.hits.1)
+
+## plot fold enrichment and the permutation pvalues
+#take the hit list, the background, and the number of permutations
+CGI_Gene_permutation_enrichment(hits.tt,background.tt, 1000, -3,2)
+```
+
+The 48 methylation site hits map to 42 unique genes. We have plotted the enrichment of hits as a fold change in various genomic regions. Based on permutation testing, only the "promoter" category was significantly depleted for hits (p = 0.028) and the "none" category was significantly enriched for hits (p = 0). 
+
+**Important** Although we have identified 48 methylation site hits between T1 and T2 patient samples, we cannot rule out that these differences occur due to variation in DNA methylation over time (which may occur stochastically or due to an unmeasured variable). To account for this, it would be best to measure DNA methylation differences at T2 vs T1 in the controls and to remove the overlap of shared hits from the patient hits---the remaining hits in the patients are likely attributed to post-intervention effects. 
+
+We will use a DMR-detection method called DMRcate to independently assess if there are any DMRs between T1 and T2 patient samples.
+
+### DMRCate: Identification of DMRs
+
+De novo identification and extraction of differentially methylated regions (DMRs) in the human
+genome using Illumina HM450K Beadchip data. DMRcate extracts and annotates differentially methylated
+regions (DMRs) using an array-bias corrected smoothed estimate.  Functions are provided for filtering probes possibly confounded by SNPs and cross-hybridisation. Includes GRanges generation and plotting functions.
+
+* Using Nicole Gladish's updated script for DMRcate
+
+```{r}
+# get DNA methylation data
+Mvals.tt<-exprs(tt_subset) # M-values for DMRcate
+betas.tt<-betas(tt_subset)
+str(Mvals.tt)
+
+
+# make model matrix
+meta.tt<-pData(tt_subset)
+design.tt<- model.matrix(~Sample_Group + Patient_ID, meta.tt)
+
+# perform DMRcate
+tt.myannotation <- cpg.annotate(datatype="array", Mvals.tt, analysis.type="differential", design=design.tt, coef=2, fdr=0.05) # annotate CpGs with their chromosome position and test statistic (fdr cutoff isn't really used; all probes are passed through for DMR generation in next step)
+tt.dmrcoutput <- dmrcate(tt.myannotation, lambda=1000, C=2, pcutoff =0.05) # here you can change the FDR and beta cutoffs; in this case, only FDR < 0.05 has been specified by us while other parameters are set to default values recommended by DMRCate package creators 
+tt.results.ranges <- extractRanges(tt.dmrcoutput, genome="hg19") #takes a dmrcate.output and produces the corresponding GRanges object; NOTE that p.value is actually FDR
+length(tt.results.ranges) #6053 DMRs at FDR of 0.05
+
+### --> NEXT STEP - pulling out CpGs, individual beta FC, and making a table that can be saved as .txt ###
+
+# pulling out the significant CpGs from the DMRs
+fdat <- fData(tt_subset)
+fdat$CHR <- as.character(fdat$CHR)
+
+sig.cpgs <- lapply(1:length(tt.results.ranges), function(x){
+  coords <- names(ranges(tt.results.ranges))[x]
+  chr <- sub(":.*", "", coords) 
+  chr <- sub("chr", "", chr)
+  bookends <- sub(".*:", "", coords)
+  startcpg <- as.integer(sub("-.*", "", bookends))
+  stopcpg <- as.integer(sub(".*-", "", bookends))
+  cpgs <- rownames(fdat)[fdat$CHR %in% chr & fdat$MAPINFO >= 
+                             startcpg & fdat$MAPINFO <= stopcpg]
+})
+
+sig.cpgs.list <- unlist(sig.cpgs)
+
+#Making a dataframe based on CpGs from ranges object and attaching map info and DMRcate statistics. 
+
+
+dmrinput <- tt.dmrcoutput$input
+head(sub_dmrinput <- dmrinput[as.character(dmrinput$ID) %in% sig.cpgs.list,])
+head(sub_fdat <- fdat[as.character(fdat$ILMNID) %in% sig.cpgs.list,])
+merged_dmrinput_fDat<-merge(sub_dmrinput, sub_fdat, by.x = "ID", by.y = "ILMNID")
+
+# get toptable with computed delta beta and add to merged_dmrinput_fDat
+deltabeta.ordered<-topT.tt.complete[as.character(merged_dmrinput_fDat$ID),]
+identical(rownames(deltabeta.ordered), as.character(merged_dmrinput_fDat$ID))
+merged_dmrinput_fDat$delta_beta<-deltabeta.ordered$deltabeta
+head(merged_dmrinput_fDat)
+
+sig.cpgs.df <- data.frame(cpg=merged_dmrinput_fDat$ID, 
+                          FC = merged_dmrinput_fDat$betafc,
+                          FDR = merged_dmrinput_fDat$fdr,
+                          Gene = merged_dmrinput_fDat$UCSC_REFGENE_NAME,
+                          pvalue = merged_dmrinput_fDat$raw,
+                          chr = merged_dmrinput_fDat$CHR.x,
+                          position = merged_dmrinput_fDat$MAPINFO,
+                          deltabeta = merged_dmrinput_fDat$delta_beta)
+
+
+# Assigning the correct DMR to each CpG
+
+sig.cpg.dmr <- lapply(1:nrow(sig.cpgs.df), function(x){
+  a<- which(sub(":.*", "", names(ranges(tt.results.ranges))) == sig.cpgs.df$chr[x] & 
+              start(ranges(tt.results.ranges)) <= sig.cpgs.df$position[x] & 
+              end(ranges(tt.results.ranges)) >= sig.cpgs.df$position[x])
+  names(ranges(tt.results.ranges))[a]
+})
+
+sig.cpgs.df$dmr <- unlist(sig.cpg.dmr)
+
+# This code adds the mean, max and min delta beta values for each DMR.
+
+mean_max_DB <- data.frame(deltabeta=sig.cpgs.df$deltabeta, 
+                          dmr = sig.cpgs.df$dmr)
+test <- aggregate(.~dmr, data=mean_max_DB, mean)
+colnames(test) <- c("dmr", "mean_DB")
+test.max <- aggregate(.~dmr, data=mean_max_DB, max)
+colnames(test.max) <- c("dmr", "max_DB")
+test.min <- aggregate(.~dmr, data=mean_max_DB, min)
+colnames(test.min) <- c("dmr", "min_DB")
+DB_info <- merge(test, test.max, by = "dmr")
+DB_info <- merge(DB_info, test.min, by = "dmr")
+head(DB_info)
+
+# Making a second table with DMR info.
+
+results <- tt.dmrcoutput$results
+
+#getting the mean for the DMR - you could do other manipulations here as well 
+dmr.mean.df <- lapply(1:length(unique(sig.cpgs.df$dmr)), function(x) {
+  mean(sig.cpgs.df$FC[which(sig.cpgs.df$dmr == unique(sig.cpgs.df$dmr)[x])])
+})
+
+dmr.df <- data.frame(dmr = unique(sig.cpgs.df$dmr),
+                     meanbetafc = unlist(dmr.mean.df))
+dmr.df <- dmr.df[order(match(dmr.df$dmr, results$coord)),]
+identical(as.character(dmr.df$dmr), results$coord)
+dmr.df$dmr <- as.character(dmr.df$dmr)
+results <- merge(results, dmr.df, by.x = "coord", by.y = "dmr") 
+results$chr <- sub(":.*", "", results$coord)
+bookends <- sub(".*:", "", results$coord)
+results$start <- as.integer(sub("-.*", "", bookends))
+results$end <- as.integer(sub(".*-", "", bookends))
+results$width <- (results$end - results$start) + 1
+results <- merge(results, DB_info, by.x = "coord",by.y = "dmr")
+head(results) 
+summary(results$mean_DB)
+
+## Filter DMRs to those with mean delta beta difference > 0.05
+filtered.DMR.results<-results[which(abs(results$mean_DB)>0.05),]
+dim(filtered.DMR.results) # no significant DMRs at FDR < 0.05 and mean delta beta difference > 0.05
+
+```
+
+We did not identify any significant DMRs at FDR < 0.05 and mean delta beta difference > 0.05 between T1 and T2 patient samples.
+
+Finally we will check if any of these identified hits overlap with XY cross-hybridizing probes that non-specifically bind to the sex chromosomes
+
+```{r echo=FALSE}
+xy_hit_index <- which(fData(EDDA.cell.cor.rev)$XY_Hits == "XY_YES")
+dim(XY_crosshybrid_probes <- EDDA.cell.cor.rev[xy_hit_index, ])
+intersect(featureNames(XY_crosshybrid_probes), as.character(hits.tt.summary.cor$Probe_ID))
+```
+
+We observe there are no hits that overlap with XY cross-hybridizing probes. 
+
+#### Question 3) Does the intervention help revert DNA methylation status back to baseline (comparable to healthy controls)?
+
+- To test this, need to perform unpaired testing of linear model for T2 patient samples vs controls (adjusted for necessary covariates such as age and cigarettes per day).
+
+We will first subset the data to control and T2 patient samples. Then will check that age and cigarettes per day are not correlated (as they come up in the same top PC)---this will rule out possible colinearity in our model. Then we will fit a linear model for T2 patient samples vs controls (adjusted for necessary covariates such as age and cigarettes per day).
+
+```{r, echo=FALSE }
+# subset data to just control vs T2 patient samples
+toMatch3<-c("control", "t2")
+c2.samples <- grep(paste(toMatch3,collapse="|"),all.dat$Sample_Group)
+c2_subset<-all.dat[,c2.samples]
+dim(c2_subset) # probes = 452266, samples = 47
+
+### Linear regression analysis with unpaired testing (adjusted for age and cigarettes per day)
+# make model matrix
+meta.c2<-pData(c2_subset)
+meta.c2$Sample_Group<-as.factor(meta.c2$Sample_Group)
+design.c2<- model.matrix(~Sample_Group + Age + Cigarettes_perDay, meta.c2)
+# fit model
+fit.c2 <- lmFit(exprs(c2_subset), design.c2) # fit model to M-values
+# use Bayesian model to generate moderated statistics
+fit.c2.moderated <- eBayes(fit.c2)
+# generate topTable linear regression outputs
+topT.c2.complete <- topTable(fit.c2.moderated, coef="Sample_Groupt2" , adjust = "BH",num=Inf)
+hist(topT.c2.complete$P.Value, breaks=40, main="Unadj. P-val distribution for Control vs T2 Patient Differences", xlab="Unadjusted p-value", ylab="Frequency", col="forestgreen")
+```
+
+
+We observe a p-value distribution with a leftward skew for differential DNA methylation between controls and T2 patient samples. This suggests an enrichment of low p-values beyond expected by chance which is encouraging. We will next seek to identify hits. 
+
+```{r echo=FALSE}
+
+## Delta beta between groups (controls vs T1 patients)
+#### Ask Meg/Rachel: Should I have used the adjusted beta values???? According to Meg, adjusting beta values for covariates does NOT report measured DNA methylation values; she is more comfortable showing measured DNA methylation values. 
+betas_c2<-betas(c2_subset)
+betas_c2.or<-betas_c2[match(rownames(topT.c2.complete), rownames(betas_c2)), ]
+# identical(rownames(betas_c2.or), rownames(topT.c2.complete)) # TRUE
+meta_c2<-pData(c2_subset)
+# identical(colnames(betas_c2.or), rownames(meta_c2)) # TRUE
+meta_c2$Sample_Group<-as.factor(meta_c2$Sample_Group)
+Patient_T2_AvgB<-rowMeans(betas_c2.or[,which(meta_c2$Sample_Group=="t2")], na.rm=T)
+Controls_AvgB<-rowMeans(betas_c2.or[,which(meta_c2$Sample_Group=="control")], na.rm=T)
+topT.c2.complete$deltabeta<-Controls_AvgB-Patient_T2_AvgB
+
+head(topT.c2.complete)
+```
+
+We can see that the top hit has an adjusted p-value of ~0.3, signifying that there are no significant hits that pass a FDR threshold of 0.1 or 0.05 between the controls and T2 patient samples.  
+
+### DMRCate: Identification of DMRs              
+
+De novo identification and extraction of differentially methylated regions (DMRs) in the human
+genome using Illumina HM450K Beadchip data. DMRcate extracts and annotates differentially methylated
+regions (DMRs) using an array-bias corrected smoothed estimate.  Functions are provided for filtering probes possibly confounded by SNPs and cross-hybridisation. Includes GRanges generation and plotting functions.
+
+* Using Nicole Gladish's updated script for DMRcate
+
+```{r}
+# get DNA methylation data
+Mvals.c2<-exprs(c2_subset) # M-values for DMRcate
+betas.c2<-betas(c2_subset)
+
+
+# make model matrix
+meta.c2<-pData(c2_subset)
+meta.c2$Sample_Group<-as.factor(meta.c2$Sample_Group)
+design.c2<- model.matrix(~Sample_Group + Age + Cigarettes_perDay, meta.c2)
+
+# perform DMRcate
+c2.myannotation <- cpg.annotate(datatype="array", Mvals.c2, analysis.type="differential", design=design.c2, coef=2, fdr=0.05) # annotate CpGs with their chromosome position and test statistic (fdr cutoff isn't really used; all probes are passed through for DMR generation in next step)
+c2.dmrcoutput <- dmrcate(c2.myannotation, lambda=1000, C=2, pcutoff =0.05) # here you can change the FDR and beta cutoffs; in this case, only FDR < 0.05 has been specified by us while other parameters are set to default values recommended by DMRCate package creators 
+c2.results.ranges <- extractRanges(c2.dmrcoutput, genome="hg19") #takes a dmrcate.output and produces the corresponding GRanges object; NOTE that p.value is actually FDR
+length(c2.results.ranges) #750 DMRs at FDR of 0.05
+
+### --> NEXT STEP - pulling out CpGs, individual beta FC, and making a table that can be saved as .txt ###
+
+# pulling out the significant CpGs from the DMRs
+fdat <- fData(c2_subset)
+fdat$CHR <- as.character(fdat$CHR)
+
+sig.cpgs <- lapply(1:length(c2.results.ranges), function(x){
+  coords <- names(ranges(c2.results.ranges))[x]
+  chr <- sub(":.*", "", coords) 
+  chr <- sub("chr", "", chr)
+  bookends <- sub(".*:", "", coords)
+  startcpg <- as.integer(sub("-.*", "", bookends))
+  stopcpg <- as.integer(sub(".*-", "", bookends))
+  cpgs <- rownames(fdat)[fdat$CHR %in% chr & fdat$MAPINFO >= 
+                             startcpg & fdat$MAPINFO <= stopcpg]
+})
+
+sig.cpgs.list <- unlist(sig.cpgs)
+
+#Making a dataframe based on CpGs from ranges object and ac2aching map info and DMRcate statistics. 
+
+
+dmrinput <- c2.dmrcoutput$input
+head(sub_dmrinput <- dmrinput[as.character(dmrinput$ID) %in% sig.cpgs.list,])
+head(sub_fdat <- fdat[as.character(fdat$ILMNID) %in% sig.cpgs.list,])
+merged_dmrinput_fDat<-merge(sub_dmrinput, sub_fdat, by.x = "ID", by.y = "ILMNID")
+
+# get toptable with computed delta beta and add to merged_dmrinput_fDat
+deltabeta.ordered<-topT.c2.complete[as.character(merged_dmrinput_fDat$ID),]
+identical(rownames(deltabeta.ordered), as.character(merged_dmrinput_fDat$ID))
+merged_dmrinput_fDat$delta_beta<-deltabeta.ordered$deltabeta
+head(merged_dmrinput_fDat)
+
+sig.cpgs.df <- data.frame(cpg=merged_dmrinput_fDat$ID, 
+                          FC = merged_dmrinput_fDat$betafc,
+                          FDR = merged_dmrinput_fDat$fdr,
+                          Gene = merged_dmrinput_fDat$UCSC_REFGENE_NAME,
+                          pvalue = merged_dmrinput_fDat$raw,
+                          chr = merged_dmrinput_fDat$CHR.x,
+                          position = merged_dmrinput_fDat$MAPINFO,
+                          deltabeta = merged_dmrinput_fDat$delta_beta)
+
+
+# Assigning the correct DMR to each CpG
+
+sig.cpg.dmr <- lapply(1:nrow(sig.cpgs.df), function(x){
+  a<- which(sub(":.*", "", names(ranges(c2.results.ranges))) == sig.cpgs.df$chr[x] & 
+              start(ranges(c2.results.ranges)) <= sig.cpgs.df$position[x] & 
+              end(ranges(c2.results.ranges)) >= sig.cpgs.df$position[x])
+  names(ranges(c2.results.ranges))[a]
+})
+
+sig.cpgs.df$dmr <- unlist(sig.cpg.dmr)
+
+# This code adds the mean, max and min delta beta values for each DMR.
+
+mean_max_DB <- data.frame(deltabeta=sig.cpgs.df$deltabeta, 
+                          dmr = sig.cpgs.df$dmr)
+test <- aggregate(.~dmr, data=mean_max_DB, mean)
+colnames(test) <- c("dmr", "mean_DB")
+test.max <- aggregate(.~dmr, data=mean_max_DB, max)
+colnames(test.max) <- c("dmr", "max_DB")
+test.min <- aggregate(.~dmr, data=mean_max_DB, min)
+colnames(test.min) <- c("dmr", "min_DB")
+DB_info <- merge(test, test.max, by = "dmr")
+DB_info <- merge(DB_info, test.min, by = "dmr")
+head(DB_info)
+
+# Making a second table with DMR info.
+
+results <- c2.dmrcoutput$results
+
+#gec2ing the mean for the DMR - you could do other manipulations here as well 
+dmr.mean.df <- lapply(1:length(unique(sig.cpgs.df$dmr)), function(x) {
+  mean(sig.cpgs.df$FC[which(sig.cpgs.df$dmr == unique(sig.cpgs.df$dmr)[x])])
+})
+
+dmr.df <- data.frame(dmr = unique(sig.cpgs.df$dmr),
+                     meanbetafc = unlist(dmr.mean.df))
+dmr.df <- dmr.df[order(match(dmr.df$dmr, results$coord)),]
+identical(as.character(dmr.df$dmr), results$coord)
+dmr.df$dmr <- as.character(dmr.df$dmr)
+results <- merge(results, dmr.df, by.x = "coord", by.y = "dmr") 
+results$chr <- sub(":.*", "", results$coord)
+bookends <- sub(".*:", "", results$coord)
+results$start <- as.integer(sub("-.*", "", bookends))
+results$end <- as.integer(sub(".*-", "", bookends))
+results$width <- (results$end - results$start) + 1
+results <- merge(results, DB_info, by.x = "coord",by.y = "dmr")
+head(results) 
+summary(results$mean_DB)
+
+## Filter DMRs to those with mean delta beta difference > 0.05
+filtered.DMR.results<-results[which(abs(results$mean_DB)>0.05),]
+dim(filtered.DMR.results) # 20 significant DMRs at FDR < 0.05 and mean delta beta difference > 0.05
+CT2.sig.DMRs<-filtered.DMR.results
+# save(CT2.sig.DMRs, file = "Significant_DMRs_Controls_vs_T2.RData")
+# write.csv(CT2.sig.DMRs, file = "Significant_DMRs_Controls_vs_T2.csv", row.names = F)
+
+
+## Determine how many significant hits are underlying the probes of these significant DMRs?
+CT2.sig.dmr.sites<-sig.cpgs.df[which(sig.cpgs.df$dmr%in%filtered.DMR.results$coord),] # 110 CpGs underlying the 20 significant DMRs
+# write.csv(CT2.sig.dmr.sites, file = "Significant_Sites_of_DMRs_Controls_vs_T2.csv", row.names = F)
+
+```
+
+We did not identify any significant DMRs at FDR < 0.05 and mean delta beta difference > 0.05 between T1 and T2 patient samples.
+
+We will plot the SRPK3 DMR as an example. 
+
+```{r echo=FALSE}
+# plot DMR chr10:1405193-1406218
+plot_DMR(c2_subset, as.factor(c2_subset$Sample_Group), "10", 1405193,1406218)
+
+# plot DMR chr10:90985055-90985062
+plot_DMR(c2_subset, as.factor(c2_subset$Sample_Group), "10", 90985055,90985062)
+
+# plot DMR chr1:153599671-153600156
+plot_DMR(c2_subset, as.factor(c2_subset$Sample_Group), "1", 153599671,153600156)
+
+# plot DMR chr14:93698053-93698416
+plot_DMR(c2_subset, as.factor(c2_subset$Sample_Group), "14", 93698053,93698416)
+
+# plot DMR chr17:33759484-33760527
+plot_DMR(c2_subset, as.factor(c2_subset$Sample_Group), "17", 33759484,33760527)
+```
+
+
+#### Question 4) Check for overlap of hits
+
+We will take a candidate approach and test whether the 59 hits identified between controls vs T1 patients are also differential in controls vs T2 patients. 
+
+```{r echo=FALSE}
+# get DNA methylation data for controls vs T2 comparison
+Mvals.c2<-exprs(c2_subset) # M-values for DMRcate
+betas.c2<-betas(c2_subset)
+
+# subset down to just 59 hits identified between controls and T1 patients
+Mvals.c2.candidate<-Mvals.c2[rownames(CT1.hits),]
+betas.c2.candidate<-betas.c2[rownames(CT1.hits),]
+
+# make model matrix
+meta.c2<-pData(c2_subset)
+meta.c2$Sample_Group<-as.factor(meta.c2$Sample_Group)
+identical(rownames(meta.c2), colnames(Mvals.c2.candidate)) # TRUE
+sample.group<-as.factor(meta.c2$Sample_Group)
+age<-meta.c2$Age
+cigs<-meta.c2$Cigarettes_perDay
+
+## fit separate linear models for each individual candidate CpG 
+z<-lm(unlist(Mvals.c2.candidate[1,]) ~sample.group + age + cigs)
+summary(z)
+mval<-Mvals.c2.candidate
+p<-sapply(1:nrow(mval), function(x) {z<-lm(unlist(mval[x,]) ~  sample.group + age + cigs)
+                                                  coef(summary(z))["sample.groupt2", "Pr(>|t|)"]})
+
+adj.p<-p.adjust(p, method="BH")
+candidate.probes.df<-data.frame(Probes=as.character(rownames(Mvals.c2.candidate)), P.values=p, Adj.p.value=adj.p)
+sites.of.interest.df<-subset(candidate.probes.df, Adj.p.value>=0.1) # 7 non-significant sites between controls and T2
+str(sites.of.interest.df)
+# add delta beta difference to hits.df data frame
+betas.c2.candidate.or<-betas.c2.candidate[as.character(sites.of.interest.df$Probes), ]
+identical(rownames(betas.c2.candidate.or), as.character(sites.of.interest.df$Probes)) # TRUE
+identical(colnames(betas.c2.candidate.or), rownames(meta_c2)) # TRUE
+Patient_T2_AvgB.candidate<-rowMeans(betas.c2.candidate.or[,which(meta.c2$Sample_Group=="t2")], na.rm=T)
+Controls_AvgB.candidate<-rowMeans(betas.c2.candidate.or[,which(meta.c2$Sample_Group=="control")], na.rm=T)
+sites.of.interest.df$deltabeta<-Controls_AvgB.candidate-Patient_T2_AvgB.candidate
+interesting.sites<-as.character(sites.of.interest.df$Probes)
+# add relevant genomic annotation to these hits
+hits.c2.genes.candidate<-Gene_CpG_Relations_update[which(Gene_CpG_Relations_update$Probe_ID %in% interesting.sites),] # probe hits mapped to genes
+length(unique(hits.c2.genes.candidate$Probe_ID)) # should be same as the number of interesting sites (ie 7)
+length(unique(hits.c2.genes.candidate$gene)) # sites map to 10 genes
+
+## Individually test these 7 potential reverting sites to see if they show significant differences between T1 and T2 samples
+# subset down to just 7 potential reverting sites identified above
+Mvals.tt.candidate<-exprs(tt_subset)[as.character(sites.of.interest.df$Probes),]
+betas.tt.candidate<-betas(tt_subset)[as.character(sites.of.interest.df$Probes),]
+
+# make model matrix (use meta_tt from earlier code chunk)
+identical(rownames(meta.tt), colnames(Mvals.tt.candidate)) # TRUE
+tt_group<-meta.tt$Sample_Group
+tt_patient_id<-meta.tt$Patient_ID
+
+## fit separate linear models for each individual candidate CpG 
+z<-lm(unlist(Mvals.tt.candidate[1,]) ~tt_group + tt_patient_id)
+summary(z)
+mval<-Mvals.tt.candidate
+p.tt<-sapply(1:nrow(mval), function(x) {z<-lm(unlist(mval[x,]) ~tt_group + tt_patient_id)
+                                                  coef(summary(z))["tt_groupt2", "Pr(>|t|)"]})
+adj.p.tt<-p.adjust(p.tt, method="BH")
+tt.candidate.probes.df<-data.frame(Probes=as.character(rownames(Mvals.tt.candidate)), P.values=p.tt, Adj.p.value=adj.p.tt)
+tt.sites.of.interest.df<-subset(tt.candidate.probes.df, Adj.p.value<=0.1) # 7 non-significant sites between controls and T2
+
+
+# calculate delta betas from two beta matrices of matched T1 vs T2 samples in the same order
+delta.betas.calc<-function(t1,t2){
+  summation<-unlist(lapply(1:nrow(t1), function(cpg){
+    mean(t1[cpg,]-t2[cpg,])}))
+}
+
+# re-order t1 and t2 samples in same order in two separate datasets
+tt_subset.or<-tt_subset[,order(tt_subset$Patient_ID)]
+t1.dat<-tt_subset.or[,which(tt_subset.or$Sample_Group=="patient")]
+t2.dat<-tt_subset.or[,which(tt_subset.or$Sample_Group=="t2")]
+# identical(t1.dat$Patient_ID, t2.dat$Patient_ID) # TRUE
+# match the probe order of toptable with ordered beta matrices of t1 and t2 samples
+t1.betas<-betas(t1.dat)
+t1.betas.or<-t1.betas[as.character(tt.sites.of.interest.df$Probes),]
+identical(rownames(t1.betas.or), as.character(tt.sites.of.interest.df$Probes)) # TRUE
+t2.betas<-betas(t2.dat)
+t2.betas.or<-t2.betas[as.character(tt.sites.of.interest.df$Probes),]
+identical(rownames(t2.betas.or), as.character(tt.sites.of.interest.df$Probes)) # TRUE
+# calculate delta betas and add as column in toptable
+tt.sites.of.interest.df$deltabeta<-delta.betas.calc(t1.betas.or, t2.betas.or)
+tt.sites.of.interest.df
+```
+
+We took a candidate approach and tested the 59 hits that were identified in the comparison of controls vs T1 patients using individual linear models, testing for differential between controls vs T2 samples. We identified 7 sites (out of 59) which were not significantly differential between controls vs T2 at FDR of 0.1. Based on paired testing, we ascertained that these 7 sites were indeed differentially methylated between T1 and T2 patient samples. Accordingly these sites likely represent sites in which the DNA methylation levels in T2 samples reverted back to levels comparable to controls following alcohol abstinence intervention. 
+
+We will provide an output of these 7 sites and will plot these sites as boxplots across all samples. 
+
+```{r echo = FALSE}
+hits.c2.genes.candidate.or<-hits.c2.genes.candidate[match(interesting.sites, hits.c2.genes.candidate$Probe_ID),]
+identical(hits.c2.genes.candidate.or$Probe_ID, as.character(sites.of.interest.df$Probes)) # TRUE
+identical(as.character(tt.sites.of.interest.df$Probes), as.character(sites.of.interest.df$Probes)) #TRUE
+
+reverting.sites.summary<-data.frame(Probe_ID=hits.c2.genes.candidate.or$Probe_ID, Gene=as.character(hits.c2.genes.candidate.or$gene), Region=hits.c2.genes.candidate.or$region, Control_vs_T2_P.Value=sites.of.interest.df$P.values, Control_vs_T2_Adj.P.Value= sites.of.interest.df$Adj.p.value, Control_vs_T2_Delta_beta=sites.of.interest.df$deltabeta, T1_vs_T2_P.Value=tt.sites.of.interest.df$P.values, T1_vs_T2_Adj.P.Value= tt.sites.of.interest.df$Adj.p.value, T1_vs_T2_Delta_beta=tt.sites.of.interest.df$deltabeta)
+reverting.sites.summary
+# write.csv(reverting.sites.summary, file="Reverting_DNAm_Sites_Candidate_Testing.csv", row.names=F)
+
+# # plot all control vs T1 hits to see if T2 levels return to that of controls 
+betas.all.overlap<-betas(all.dat)[interesting.sites,]
+betas.all.overlap.melted<-melt(betas.all.overlap)
+colnames(betas.all.overlap.melted)<-c("Site", "Sample", "value")
+meta_all<-pData(all.dat)
+meta_all$Sample_Name<-rownames(meta_all)
+overlap.plot<-merge(betas.all.overlap.melted, meta_all, by.x="Sample", by.y="Sample_Name")
+overlap.plot$Sample_Group<-as.factor(overlap.plot$Sample_Group)
+
+
+ggplot(overlap.plot, aes(Sample_Group, value, fill=factor(Sample_Group)))  + geom_boxplot(outlier.size = NA)  +theme_bw() + scale_fill_manual(name = "Sample Group", values = c("#d6604d","#4393c3", "#92c5de"), labels = c( "Controls", "Patient (T1)", "Patient(T2)")) + ylab("DNA methylation") + xlab("Sample Group") + facet_wrap(~Site, ncol = 4)
+```
+
+
+This completes the differential methylation analysis. 
+

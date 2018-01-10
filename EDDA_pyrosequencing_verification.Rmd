@@ -1,0 +1,207 @@
+EDDA Pyrosequencing Verification
+========================================================
+##### By: Sumaiya Islam
+##### Date: September 22, 2016
+
+### Script contents:
+- Correlation of pyrosequencing and 450K differential CpG sites (cg07280807,cg18752527,cg21466315). Note that these pyrosequencing assays were performed by Chris in Tubingen using a separate batch of bisulfite-converted DNA from isolated T-cell samples of these individuals. 
+
+Note: Sites selected to verify by pyrosequencing should be prioritized by significance and large effect size. 
+
+### A. Set up wd & packages
+
+We will initially set our working directory and load our libraries.
+```{r setup, include = FALSE, echo=FALSE}
+setwd("/home/sislam/EDDA")
+library(methylumi)
+library(gplots)
+library(marray)
+library(lumi)
+library(lattice)
+library("RColorBrewer")
+library(knitr)
+library(xtable)
+library(limma)
+library(reshape)
+library(ggplot2)
+library(grid)
+library(gridExtra)
+library(MASS)
+```
+
+### B. Load data
+
+We will load the data containing both the beta values for both the 450K and pyrosequencing platforms for the target CpGs (cg07280807,cg18752527,cg21466315). 
+
+```{r load_data, echo=FALSE, include=FALSE}
+# load normalized, cell-type corrected 450K data
+load(file="EDDA.cor.final.RData")
+betas.matrix<-betas(EDDA.cell.cor.rev)
+verified_CpGs<-c("cg07280807","cg18752527","cg16529483", "cg24496423")
+verified_CpG_betas<-betas.matrix[rownames(betas.matrix)%in%verified_CpGs,]
+array_ver_CpG<-melt(verified_CpG_betas)
+colnames(array_ver_CpG)<-c("Probe","Sample", "Array_value")
+head(array_ver_CpG)
+
+# load pyrosequencing data from Chris
+pyro_ver.dat<-read.csv(file="Pyroseq_verification_EDDA.csv", header = T, row.names=1, check.names=F)
+pyro_only_dat<-pyro_ver.dat[,c("cg07280807_pyro", "cg18752527_pyro")]
+colnames(pyro_only_dat)<-c("cg07280807", "cg18752527")
+## load additional pyrosequencing data from Chris (performed later)
+add_pyro_dat<-read.csv(file="Pyroseq_verification_additional_sites_EDDA.csv", header = T, row.names=1, check.names=F)
+add_pyro_dat_order<-add_pyro_dat[match(rownames(pyro_ver.dat),rownames(add_pyro_dat)),]
+identical(rownames(add_pyro_dat_order), rownames(pyro_ver.dat)) # TRUE
+# append additional pyro data to original pyro data
+pyro_only_dat_complete<-cbind(pyro_only_dat, add_pyro_dat_order)
+pyro_only_dat_complete$Sample<-rownames(pyro_only_dat_complete)
+
+pyro_only_melt<-melt(pyro_only_dat_complete, id.vars=c("Sample"))
+colnames(pyro_only_melt)<-c("Sample_ID", "Probe_ID", "Pyro_value")
+
+# merge corrected 450K data with pyro data
+merged_ver_dat<-merge(pyro_only_melt, array_ver_CpG, by.x=c("Probe_ID","Sample_ID"), by.y=c("Probe", "Sample"))
+
+# multiply array beta value by 100 to methylation percentage
+merged_ver_dat$Array_value<-(merged_ver_dat$Array_value)*100
+
+
+# Calculate diff (array-pyro measures) and average (array + pyro/2) for each sample in the validation dataset (for Bland-Altman plot)
+
+for (i in 1:nrow(merged_ver_dat)){
+  merged_ver_dat$diff<-(merged_ver_dat[,"Array_value"]-merged_ver_dat[,"Pyro_value"])
+  merged_ver_dat$avg<-((merged_ver_dat[,"Array_value"]+merged_ver_dat[,"Pyro_value"])/2)
+}
+
+head(merged_ver_dat)
+# write.csv(merged_ver_dat, file = "Pyrosequencing_vs_450K_verified_CpGs.csv")
+```
+
+### C. Correlations between Array and Pyrosequencing Measures
+
+We will correlate the data containing both the beta values for both the 450K and pyrosequencing platforms for the target CpGs (cg07280807, cg18752527, cg16529483, cg24496423). The resulting correlations will be plotted in scatterplots. 
+
+For correlation plots
+
+```{r echo=FALSE, warning=FALSE}
+# subset by each probe 
+cg07280807.dat<-merged_ver_dat[which(merged_ver_dat$Probe_ID=="cg07280807"),]
+cg18752527.dat<-merged_ver_dat[which(merged_ver_dat$Probe_ID=="cg18752527"),]
+cg16529483.dat<-merged_ver_dat[which(merged_ver_dat$Probe_ID=="cg16529483"),]
+cg24496423.dat<-merged_ver_dat[which(merged_ver_dat$Probe_ID=="cg24496423"),]
+
+
+## compute Spearman's Correlation for each probe
+head(cg07280807.dat)
+# for cg07280807.dat
+cor.test(cg07280807.dat$Pyro_value, cg07280807.dat$Array_value, alternative="two.sided", method="spearman") # spearman's rho = 0.8463 p < 2.2e-16
+# for cg18752527.dat
+cor.test(cg18752527.dat$Pyro_value, cg18752527.dat$Array_value, alternative="two.sided", method="spearman") # spearman's rho = 0.713 p < 3e-12
+# for cg16529483.dat
+cor.test(cg16529483.dat$Pyro_value, cg16529483.dat$Array_value, alternative="two.sided", method="spearman") # spearman's rho = 0.787 p < 4e-16
+# for cg24496423.dat
+cor.test(cg24496423.dat$Pyro_value, cg24496423.dat$Array_value, alternative="two.sided", method="spearman") # spearman's rho = 0.803 p < 2.2e-16
+
+## Scatterplot
+(scatter.verified<-ggplot(merged_ver_dat, aes(Array_value, Pyro_value)) + geom_point(color="black", fill="#67a9cf", size=3, shape=21) + geom_smooth(method=lm, se=FALSE, fill="darkgrey", colour="black", size=1) +ylim(0,100) + xlim(0,100)+ ylab("Pyrosequencing DNA methylation") + xlab("450K DNA Methylation") + theme_bw() + facet_wrap(~Probe_ID))
+```
+
+
+All of the verified probes are highly correlated (between corrected 450K measures and pyro measures).  
+
+* for cg07280807: spearman's rho = 0.8463, p = 2.2e-16
+* for cg18752527: spearman's rho = 0.713 p, = 3e-12
+* for cg16529483: spearman's rho = 0.787 p, = 4e-16
+* for cg24496423: spearman's rho = 0.803 p, = 2.2e-16
+
+
+### D. Bland-Altman Plots
+
+The differences and averages between 450K data and pyro data will be plotted for each probe as a Bland-Altman plot. 
+
+```{r echo=FALSE, warning=FALSE}
+
+## Bland-Altman plot
+
+# calculate mean difference and 2 std dev above and below mean difference for each probe
+# for cg07280807
+m1<-mean(cg07280807.dat$diff)
+upper1<-m1+2*(sd(cg07280807.dat$diff))
+lower1<-m1-2*(sd(cg07280807.dat$diff))
+# for cg18752527
+m2<-mean(cg18752527.dat$diff)
+upper2<-m2+2*(sd(cg18752527.dat$diff))
+lower2<-m2-2*(sd(cg18752527.dat$diff))
+# for cg16529483.dat
+m3<-mean(cg16529483.dat$diff)
+upper3<-m3+2*(sd(cg16529483.dat$diff))
+lower3<-m3-2*(sd(cg16529483.dat$diff))
+# for cg24496423.dat
+m4<-mean(cg24496423.dat$diff)
+upper4<-m4+2*(sd(cg24496423.dat$diff))
+lower4<-m4-2*(sd(cg24496423.dat$diff))
+
+# make dataframe of these values for each probe
+ba.lines<-data.frame(Site=c("cg07280807","cg18752527", "cg16529483", "cg24496423"), Mean.Line=c(m1, m2, m3, m4), Upper.Line=c(upper1, upper2, upper3, upper4), Lower.Line=c(lower1, lower2, lower3, lower4))
+
+# merge with pyro and 450K data matrix
+head(ba.plot.dat<-merge(merged_ver_dat, ba.lines, by.x="Probe_ID", by.y="Site"))
+
+# Plot Bland-Altman plot for each probe
+(BAplot<-ggplot(ba.plot.dat, aes(avg, diff)) + geom_point(color="black", fill="#67a9cf", size=3, shape=21) + facet_wrap(~Probe_ID) + geom_hline(aes(yintercept=(Mean.Line))) + geom_hline(aes(yintercept=(Upper.Line)),linetype="dashed") + geom_hline(aes(yintercept=(Lower.Line)),linetype="dashed") + theme_bw() + ylab("Difference (450K - Pyro)") + xlab("Average of 450K and Pyro Measures")) # lines represent mean difference + or - 2sd
+```
+
+Based on the Bland-Altman plots, we can see that the pyro and 450K measures are unbiasedly concordant. 
+
+
+### E. Test if verified sites are significantly different using pyro measures
+
+
+Test if averaged methylation values for each assay are significantly different between groups
+
+```{r echo=FALSE, fig.height=3, fig.width=8, warning=FALSE}
+pyro_ver.dat$Sample<-rownames(pyro_ver.dat)
+meta<-pyro_ver.dat[,c("Sample", "Group")]
+
+# merge with 450K and pyro data and pull out only control and T1 patient samples
+testing.dat<-merge(merged_ver_dat, meta, by.x="Sample_ID", by.y="Sample")
+testing.dat.CT1<-testing.dat[which(testing.dat$Group<2),]
+groupings<-gsub("0", "Control",  gsub("1", "Patient(T1)", testing.dat.CT1$Group))
+testing.dat.CT1$Group<-as.factor(groupings)
+
+
+# subset by probe and select only controls and T1 patients
+cg07280807.test.dat<-subset(testing.dat, Probe_ID=="cg07280807" & Group<2)
+cg18752527.test.dat<-subset(testing.dat, Probe_ID=="cg18752527" & Group<2)
+cg16529483.test.dat<-subset(testing.dat, Probe_ID=="cg16529483" & Group<2)
+cg24496423.test.dat<-subset(testing.dat, Probe_ID=="cg24496423" & Group<2)
+
+
+## test differences between controls and T1 patients using Wilcoxon paired signed-rank test for each probe
+
+(assay.1.stat<-t.test(cg07280807.test.dat[which(cg07280807.test.dat$Group=="0"),"Pyro_value"], cg07280807.test.dat[which(cg07280807.test.dat$Group=="1"),"Pyro_value"])) # for cg07280807 p = 0.001575
+
+(assay.2.stat<-t.test(cg18752527.test.dat[which(cg18752527.test.dat$Group=="0"),"Pyro_value"], cg18752527.test.dat[which(cg18752527.test.dat$Group=="1"),"Pyro_value"])) # for cg18752527 p = 9.2e-7
+
+(assay.3.stat<-t.test(cg16529483.test.dat[which(cg16529483.test.dat$Group=="0"),"Pyro_value"], cg16529483.test.dat[which(cg16529483.test.dat$Group=="1"),"Pyro_value"])) # for cg16529483 p = 0.0005831
+
+(assay.4.stat<-t.test(cg24496423.test.dat[which(cg24496423.test.dat$Group=="0"),"Pyro_value"], cg24496423.test.dat[which(cg24496423.test.dat$Group=="1"),"Pyro_value"])) # for cg24496423 p = 0.001453
+
+(adjusted.p.values<-p.adjust(c(assay.1.stat$p.value,assay.2.stat$p.value,assay.3.stat$p.value, assay.4.stat$p.value), method="BH"))
+
+## generate boxplots for each assay
+ggplot(testing.dat.CT1, aes(Group, Pyro_value))+
+  geom_boxplot(aes(fill=Group, outlier.shape=NA))+
+  geom_point(aes(fill=Group), shape=21, size=2, position = position_jitter(w = 0.2))+
+  theme_bw()+xlab("Group")+ylab("Pyrosequencing DNA methylation")+
+  scale_fill_manual(values=c("#d6604d", "#4393c3"))+
+  facet_wrap(~Probe_ID)
+
+```
+
+We see that the four verified sites are significantly different between controls and patients at T1 based on pyrosequencing measures. Specifically, based on Student's t-test:
+
+* for cg07280807: Benjamini-Hochberg corrected p = 1.5e-3
+* for cg18752527: Benjamini-Hochberg corrected p = 2.7e-6
+* for cg16529483: Benjamini-Hochberg corrected p = 1.2e-3
+* for cg24496423: Benjamini-Hochberg corrected p = 1.6e-3
+

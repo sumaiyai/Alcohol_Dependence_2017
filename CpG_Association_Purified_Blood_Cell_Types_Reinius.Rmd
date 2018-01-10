@@ -1,0 +1,56 @@
+Check association of specific CpGs in purified blood cell types
+===============================================================
+##### By: Sumaiya Islam
+##### Date: January 30, 2017
+
+### Script contents:
+- We are interested in the following CpGs:
+ [1] "cg01330016" "cg03363743" "cg05016953" "cg05951817" "cg06841846" "cg10901968" "cg12074493"
+ [8] "cg14692377" "cg18584905" "cg20592995" "cg22584138" "cg24984698" "cg25725890" "cg26126367"
+[15] "cg26741280" "cg27569822"
+- Check for significant association between these sites of interest and blood cell type using purified blood cell types from Reinius et al. 2012 
+
+```{r setup, include=FALSE}
+library(FlowSorted.Blood.450k)
+load("Reinius_betas_BMIQ_normalized.RData") # Reinius BMIQ-normalized beta values
+load("Reinius_Meta_Data.RData") # Reinius meta data
+
+
+# for cg16529483:
+
+probe.of.interest<-c("cg02812891")
+cg16529483.betas<-melt(Reinius_betas_normalized_fin[probe.of.interest,])
+cg16529483.betas$Sample<-rownames(cg16529483.betas)
+identical(Reinius.meta$Sample_Name,  cg16529483.betas$Sample) # TRUE
+plot.site<-cbind( cg16529483.betas, Reinius.meta)
+
+# plot  cg16529483 DNA methylation in relation to blood cell type
+ggplot(plot.site, aes(CellTypeLong, value))+
+  geom_boxplot(aes(fill=CellTypeLong), outlier.shape=NA)+
+  geom_point(aes(fill=CellTypeLong), shape=21, size=2, position = position_jitter(w = 0.2))+
+  theme_bw()+xlab("Blood Cell Type")+ylab("cg02812891 DNA methylation") +  guides(fill=guide_legend(title="Blood Cell Type")) + theme(axis.text.x = element_text(angle = 60, hjust=1))
+
+# statistics for significance of association between DNAm and blood cell group
+result<-aov(value~CellTypeLong, data = plot.site)
+summary(result) # pvalue = 0.636
+
+
+# for cg24496423:
+
+probe.of.interest<-c("cg24496423")
+cg24496423.betas<-melt(Reinius_betas_normalized_fin[probe.of.interest,])
+cg24496423.betas$Sample<-rownames(cg24496423.betas)
+identical(Reinius.meta$Sample_Name,  cg24496423.betas$Sample) # TRUE
+plot.site<-cbind( cg24496423.betas, Reinius.meta)
+
+# plot  cg24496423 DNA methylation in relation to blood cell type
+ggplot(plot.site, aes(CellTypeLong, value))+
+  geom_boxplot(aes(fill=CellTypeLong), outlier.shape=NA)+
+  geom_point(aes(fill=CellTypeLong), shape=21, size=2, position = position_jitter(w = 0.2))+
+  theme_bw()+xlab("Blood Cell Type")+ylab("cg24496423 DNA methylation") +  guides(fill=guide_legend(title="Blood Cell Type")) + theme(axis.text.x = element_text(angle = 60, hjust=1))
+
+# statistics for significance of association between DNAm and blood cell group
+result<-aov(value~CellTypeLong, data = plot.site)
+summary(result) # pvalue = 0.76
+```
+

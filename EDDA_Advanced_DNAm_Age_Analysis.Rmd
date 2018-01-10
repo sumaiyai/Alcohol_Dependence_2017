@@ -1,0 +1,309 @@
+EDDA DNA Methylation Age Advanced Analysis
+====================================================================
+## By: Sumaiya Islam
+## Date: April 5, 2016
+
+### Script contents:
+- Assessment of 'epigenetic age' (Horvath et al. 2013, Genome Biol) to see if DNA methylation age differs between the groups (controls vs T1 patients & T1 vs T2 patient samples)
+- Advanced analysis allows for estimation of activated vs naive subsets of CD4 T-cells and CD8 T-cells as well as plasmoblasts. Also, predicts tissue origin. 
+
+### A. Set up wd & packages
+
+We will initially set up our working directory and load our libraries.
+```{r include=FALSE}
+setwd("/home/sislam/EDDA")
+library(methylumi)
+library(gplots)
+library(marray)
+library(lumi)
+library(lattice)
+library("RColorBrewer")
+library(knitr)
+library(xtable)
+library(limma)
+library(ggplot2)
+library(reshape)
+```
+
+### B. Load data
+
+We will load the raw data (un-normalized).
+
+```{r load_data}
+
+## Generate raw complete methylumi object from Genome Studio exports
+# get GS exports
+sampleFile <- ("EDDA_study_samplesheet_revised.txt") 
+# allFile <- ("EDDA study_alldata.txt") 
+# betaFile <- ("EDDA_study_avgbeta.txt") 
+# qcFile <- ("EDDA_study_qcfile.txt") 
+
+# file.exists(allFile)
+# file.exists(betaFile)
+# file.exists(qcFile)
+# file.exists(sampleFile)
+# generate methylumi object
+# EDDA<- lumiMethyR(allFile) # probes = 485,577, n = 18
+# input meta data
+str(sampleInfo <- read.delim(sampleFile,row.names=1,stringsAsFactors=F))
+# stopifnot(all(sampleNames(EDDA)%in%rownames(sampleInfo)))
+# sampleInfo <- sampleInfo[sampleNames(EDDA),]
+# # re-structure meta data
+# str(pData(EDDA) <- sampleInfo)
+# pData(EDDA)$Sample_Group<- as.factor(pData(EDDA)$Sample_Group)
+# pData(EDDA)$nationality<- as.factor(pData(EDDA)$nationality)
+# str(pData(EDDA))
+# identical(rownames(pData(EDDA)), colnames(exprs(EDDA))) # TRUE
+# identical(sampleNames(EDDA), rownames(pData(EDDA))) # TRUE
+```
+
+### C. Re-shape beta data put input into epigenetic age calculator
+
+#### To read more about the DNA methylation age clock (Horvath 2013 Genome Biology): http://labs.genetics.ucla.edu/horvath/dnamage/TUTORIALonlineCalculator.pdf
+
+
+```{r}
+# re-format 450K DNA methylation data for input into online epigenetic age predictor
+# library(sqldf)
+# betas.EDDA<-betas(EDDA)
+# betas.EDDA.df<-as.data.frame(betas.EDDA)
+# Probe_ID<-rownames(betas.EDDA.df) # character vector of length 485,577
+# dat0<-cbind(Probe_ID,betas.EDDA.df)
+# str(dat0)
+# datMiniAnnotation=read.csv("datMiniAnnotation.csv")
+# match1=match(datMiniAnnotation[,1], dat0[,1])
+# dat0Reduced=dat0[match1,]
+# dat0Reduced[,1]=as.character(dat0Reduced[,1])
+# dat0Reduced[is.na(match1),1]=as.character(datMiniAnnotation[is.na(match1),1])
+# datout=data.frame(dat0Reduced)
+# # make sure you output numeric variables...
+# for (i in 2:dim(datout)[[2]]  ){datout[,i]= 
+# as.numeric(as.character(gsub(x=datout[,i],pattern="\"",replacement=""))) }
+# colnames(datout)<-c("Probe_ID", "69_T2","EDDA_79",  "EDDA_66",  "EDDA_20",  "103_T2",  "67_T2",   "EDDA_97",  "EDDA_90",  "89_T2",   "EDDA_95",  "EDDA_84",  "120_T2", "EDDA_47",  "85_T2",   "47_T2",   "EDDA_29",  "EDDA_49",  "EDDA_123", "EDDA_31",  "EDDA_94",  "31_T2",   "107_T2",  "EDDA_122", "87_T2",   "EDDA_67", "EDDA_28",  "123_T2",  "EDDA_75",  "EDDA_87",  "EDDA_103", "EDDA_69",  "61_T2",   "EDDA_59",  "83_T2",   "66_T2",   "49_T2",   "EDDA_104", "121_T2", "EDDA_96",  "EDDA_61",  "EDDA_121", "EDDA_70",  "EDDA_50",  "EDDA_107", "EDDA_64",  "EDDA_77",  "EDDA_83",  "104_T2",  "100_T2",  "EDDA_105", "EDDA_82", "82_T2",   "EDDA_78",  "105_T2",  "68_T2",   "EDDA_54",  "EDDA_52",  "EDDA_93",  "EDDA_74",  "EDDA_73",  "EDDA_100", "EDDA_89",  "84_T2",   "EDDA_68", 
+# "EDDA_21",  "EDDA_120", "EDDA_25",  "EDDA_85",  "64_T2",   "122_T2",  "EDDA_92",  "EDDA_55")
+# write.table(datout,"EDDA.Horvath.csv", row.names=F, sep="," )
+```
+
+### D. Select needed variables for meta data to input into epigenetic age calculator
+```{r}
+# meta<-pData(EDDA)
+# meta$Sample_Name<-rownames(meta)
+# # identical(meta$Sample_Name, colnames(datout[,2:73])) #TRUE
+# meta.EDDA.Horvath<-subset(meta, select=c("Sample_Name","Age"))
+# # re-format data according to Horvath's specifications in http://labs.genetics.ucla.edu/horvath/dnamage/TUTORIALonlineCalculator.pdf
+# colnames(meta.EDDA.Horvath)<-c("Sample_ID","Age")
+# meta.EDDA.Horvath$Female<-"0"
+# meta.EDDA.Horvath$Female<-as.numeric(meta.EDDA.Horvath$Female)
+# meta.EDDA.Horvath$Tissue<-"Blood CD4 Tcells"        
+# identical(colnames(betas.EDDA), meta.EDDA.Horvath$Sample_ID) #TRUE
+# write.table(meta.EDDA.Horvath,"Meta.EDDA.Horvath.csv", row.names=F, sep=",")
+```
+
+## E. Analysis of output from online epigenetic age calculator (https://labs.genetics.ucla.edu/horvath/dnamage/)
+
+We will first re-format the epigenetic age clock output for ease of analysis and plotting.
+
+```{r echo=FALSE}
+
+## load outputs (as csv files)
+clock.output<-read.csv("EDDA_Advanced_Epigenetic_Age_Output.csv", header=T) # advanced epigenetic clock analysis output
+# merge clock output with meta data
+sampleInfo$Sample_Name<-rownames(sampleInfo)
+# identical(as.character(clock.output$Sample_ID), sampleInfo$Sample_Name) #TRUE
+clock.output$Sample_ID<-as.character(clock.output$Sample_ID)
+clock.meta<-merge(clock.output, sampleInfo, by.x="Sample_ID", by.y="Sample_Name") # merge Horvath output with meta data
+clock.meta$Sample_Group<-as.character(clock.meta$Sample_Group) # re-structure Sample_Group variable
+clock.meta$Sample_Group<-gsub("patient_t2", "t2", clock.meta$Sample_Group)
+
+# pull Controls and T1 subset
+toMatch<-c("control", "patient")
+con.t1.samples <- grep(paste(toMatch,collapse="|"),clock.meta$Sample_Group)
+Con_T1_subset<-clock.meta[con.t1.samples,]
+
+# pull T1 and T2 subset
+toMatch2<-c("patient", "t2")
+tt.samples <- grep(paste(toMatch2,collapse="|"),clock.meta$Sample_Group)
+tt_subset<-clock.meta[tt.samples,]
+tt_subset$Patient_ID<- c("100",   "103",   "104",   "105",   "107",   "120",   "121",   "122",   "123",   "31",    "47",    "49",    "61",   "64",    "66",    "67",    "68",    "69",    "82",    "83",   "84",    "85",    "87",   "89",    "100", "103",
+"104", "105", "107", "120", "121", "122", "123", "31",  "47",  "49",  "61",  "64",  "66", "67",  "68",  "69",  "82",  "83",  "84",  "85",  "87",  "89")
+tt_subset$Patient_ID<-as.factor(tt_subset$Patient_ID)
+# re-order t1 and t2 samples in same order in two separate datasets
+tt_subset.or<-tt_subset[order(tt_subset$Patient_ID),]
+t1.dat<-tt_subset.or[which(tt_subset.or$Sample_Group=="patient"),]
+t2.dat<-tt_subset.or[which(tt_subset.or$Sample_Group=="t2"),]
+# identical(t1.dat$Patient_ID, t2.dat$Patient_ID) # TRUE
+```
+
+### DNA Methylation Age
+
+We will start by looking at DNA methylation age (DNAm Age) (Horvath 2013 Genome Biology). We are specifically interested in seeing if DNAm age is different between controls and T1 samples and if there are differences between the T1 and T2 timepoints?
+
+```{r echo=FALSE}
+
+## scatterplot of DNAmAge and Chronological Age (Reported)
+ggplot(clock.meta, aes(Age.y, DNAmAge)) + geom_point(aes(color = AgeAccelerationResidual)) + geom_smooth(method="lm") +
+  theme_bw()+xlab("Chronological Age")+ylab("DNA Methylation Age")
+
+# Controls vs T1 (unpaired test)
+ggplot(Con_T1_subset, aes(Sample_Group, DNAmAge))+
+  geom_boxplot(aes(fill=as.factor(Sample_Group)),color="black", outlier.shape=NA)+
+  geom_point(shape=21, fill="grey",colour="black", size=4, position=position_jitter(w=0.2))+
+  theme_bw()+xlab("Sample Group")+ylab("Predicted DNA Methylation Age")  + scale_fill_manual(values=c("#d6604d", "#4393c3"), guide=FALSE) 
+DNAmage.T1<-subset(Con_T1_subset$DNAmAge, Con_T1_subset$Sample_Group=="patient")
+DNAmage.Control<-subset(Con_T1_subset$DNAmAge, Con_T1_subset$Sample_Group=="control")
+wilcox.test(DNAmage.T1, DNAmage.Control, paired=FALSE) # p-value = 0.943 (Mann Whitney U test)
+
+# T1 vs T2 (paired test)
+ggplot(tt_subset, aes(Sample_Group, DNAmAge))+
+  geom_boxplot(aes(fill=as.factor(Sample_Group)),color="black", outlier.shape=NA)+
+  geom_point(shape=21, fill="grey",colour="black", size=4, position=position_jitter(w=0.2))+
+  theme_bw()+xlab("Sample Group")+ylab("Predicted DNA Methylation Age")  + scale_fill_manual(values=c("#4393c3", "#92c5de"), guide=FALSE) 
+wilcox.test(t1.dat$DNAmAge, t2.dat$DNAmAge, paired=TRUE) # p-value = 0.3165 (Wilcoxon signed-rank test)
+```
+
+There is no statistically significant difference in DNA methylation age between controls vs T1 patient samples and T1 vs T2 patient samples. 
+
+### Age Acceleration Residual
+
+Age  acceleration (AA)  measure  defined  as  residual  from  regressing DNAm age on chronological age. It provides a measure of deviation from predicted DNAm age. As before, we are interested in seeing if AA is different between controls and T1 samples and if there are differences between the T1 and T2 timepoints?
+
+```{r echo=FALSE}
+## look at age acceleration
+
+# Controls vs T1 (unpaired test)
+ggplot(Con_T1_subset, aes(Sample_Group, AgeAccelerationResidual))+
+  geom_boxplot(aes(fill=as.factor(Sample_Group)),color="black", outlier.shape=NA)+
+  geom_point(shape=21, fill="grey",colour="black", size=4, position=position_jitter(w=0.2))+
+  theme_bw()+xlab("Sample Group")+ylab("Age Acceleration Residual")  + scale_fill_manual(values=c("#d6604d", "#4393c3"), guide=FALSE) 
+AA.T1<-subset(Con_T1_subset$AgeAccelerationResidual, Con_T1_subset$Sample_Group=="patient")
+AA.Control<-subset(Con_T1_subset$AgeAccelerationResidual, Con_T1_subset$Sample_Group=="control")
+wilcox.test(AA.T1, AA.Control, paired=FALSE) # p-value = 0.8143 (Mann Whitney U test)
+
+# T1 vs T2 (paired test)
+ggplot(tt_subset, aes(Sample_Group, AgeAccelerationResidual))+
+  geom_boxplot(aes(fill=as.factor(Sample_Group)),color="black", outlier.shape=NA)+
+  geom_point(shape=21, fill="grey",colour="black", size=4, position=position_jitter(w=0.2))+
+  theme_bw()+xlab("Sample Group")+ylab("Age Acceleration Residual")  + scale_fill_manual(values=c("#4393c3", "#92c5de"), guide=FALSE) 
+wilcox.test(t1.dat$AgeAccelerationResidual, t2.dat$AgeAccelerationResidual, paired=TRUE) # p-value = 0.3165 (Wilcoxon signed-rank test)
+```
+
+There is no statistically significant difference in age acceleration residual between controls vs T1 patient samples and T1 vs T2 patient samples. 
+
+### Age Acceleration Difference
+
+Age  acceleration difference (AAdiff) is  defined   simply   as   difference between DNA methylation age measure and chronological age  (i.e. DNAmAge minus Age). 
+
+```{r echo=FALSE}
+## look at age acceleration
+
+# Controls vs T1 (unpaired test)
+ggplot(Con_T1_subset, aes(Sample_Group, AgeAccelerationDiff))+
+  geom_boxplot(aes(fill=as.factor(Sample_Group)),color="black", outlier.shape=NA)+
+  geom_point(shape=21, fill="grey",colour="black", size=4, position=position_jitter(w=0.2))+
+  theme_bw()+xlab("Sample Group")+ylab("Age Acceleration Difference")  + scale_fill_manual(values=c("#d6604d", "#4393c3"), guide=FALSE) 
+AA.T1<-subset(Con_T1_subset$AgeAccelerationDiff, Con_T1_subset$Sample_Group=="patient")
+AA.Control<-subset(Con_T1_subset$AgeAccelerationDiff, Con_T1_subset$Sample_Group=="control")
+wilcox.test(AA.T1, AA.Control, paired=FALSE) # p-value = 0.8944 (Mann Whitney U test)
+
+# T1 vs T2 (paired test)
+ggplot(tt_subset, aes(Sample_Group, AgeAccelerationDiff))+
+  geom_boxplot(aes(fill=as.factor(Sample_Group)),color="black", outlier.shape=NA)+
+  geom_point(shape=21, fill="grey",colour="black", size=4, position=position_jitter(w=0.2))+
+  theme_bw()+xlab("Sample Group")+ylab("Age Acceleration Difference")  + scale_fill_manual(values=c("#4393c3", "#92c5de"), guide=FALSE) 
+wilcox.test(t1.dat$AgeAccelerationDiff, t2.dat$AgeAccelerationDiff, paired=TRUE) # p-value = 0.3165 (Wilcoxon signed-rank test)
+```
+
+There is no statistically significant difference in age acceleration difference between controls vs T1 patient samples and T1 vs T2 patient samples. 
+
+### Predicted blood cell types
+
+The advanced DNAm age analysis provides estimated abundance measures of plasma blasts, CD8+CD28-CD45RA-T cells, naive 
+CD8  T  cells,  and  naive  CD4  T  cells.  Interpretation:  The resulting  estimates  should  *not*  be  interpreted  as  counts  or  percentages  but  rather  as  ordinal  abundance  measures.  Don't  turn  them  into  proportions  (by  dividing  the 
+measures by the sum). Negative values simply indicate very low values. Personally, I would not set a negative value to zero but would not object if you do that. 
+Biology: 
+a) CD8+CD28-CD45RA-Tcells have characteristics of both memory and effector T cells. These cells increase with chronological age.
+b) Naive CD8 T cells decrease with age. 
+c) Here naive CD8 and CD4 T cells are defined as CD45RA+CCR7+ cells.
+d) Plasma cells, also called plasma B cells, and effector B cells, are white blood cells that secrete large  volumes  of  antibodies.
+
+Upon  stimulation  by  a  T  cell,  which  usually occurs  in  germinal  centers  of  secondary  lymphoid  organs  like  the  spleen  and  lymph  nodes,  the activated B cell begins to differentiate into more specialized cells. Germinal center B cells may 
+differentiate   into   memory   B   cells   or   plasma   cells. 
+Most   of   these   B   cells   will   become plasmablasts, and eventually plasma cells, and begin producing large volumes of antibodies.
+
+Statistical  method  for  estimating  these  cell  abundance  measures:  A  penalized  regression  model (elastic net) was used regress cell count measures on DNA methylation levels. Estimated values are predicted values based on this penalized regression model.
+
+```{r echo=FALSE}
+# Controls vs T1 (unpaired test)
+Con_T1_subset_predicted_cells<-Con_T1_subset[,c("PlasmaBlast", "CD8pCD28nCD45RAn", "CD8.naive", "CD4.naive",  "Sample_Group", "Sample_ID")]
+head(Con_T1_subset_predicted_cells)
+head(melted_Con_T1_subset_predicted_cells<-melt(Con_T1_subset_predicted_cells))
+patient.sub<-gsub("patient", "t1", melted_Con_T1_subset_predicted_cells$Sample_Group)
+melted_Con_T1_subset_predicted_cells$Sample_Group<-patient.sub
+memory.sub<-gsub("CD8pCD28nCD45RAn", "CD8.memory", melted_Con_T1_subset_predicted_cells$variable)
+melted_Con_T1_subset_predicted_cells$variable<-memory.sub
+colnames(melted_Con_T1_subset_predicted_cells)<-c("Group", "SampleID", "Cell", "Abundance")
+melted_Con_T1_subset_predicted_cells$Group<-as.factor(as.character(melted_Con_T1_subset_predicted_cells$Group))
+ggplot(melted_Con_T1_subset_predicted_cells, aes(Group, Abundance)) + geom_boxplot(aes(fill=Group),color="black", outlier.shape=NA)+ geom_point(shape=21, fill="grey",colour="black", size=2, position=position_jitter(w=0.2))+ scale_fill_manual(values=c("#d6604d", "#4393c3")) + theme_bw() +facet_wrap(~Cell)
+# test difference between groups to see if there is a significant difference in cell type proportion between controls and T1 patient (Mann-Whitney U test)
+mw.test.plasmablast<-wilcox.test(Con_T1_subset[which(Con_T1_subset$Sample_Group=="control"), "PlasmaBlast"],Con_T1_subset[which(Con_T1_subset$Sample_Group=="patient"), "PlasmaBlast"])
+mw.test.memory.CD8T<-wilcox.test(Con_T1_subset[which(Con_T1_subset$Sample_Group=="control"), "CD8pCD28nCD45RAn"],Con_T1_subset[which(Con_T1_subset$Sample_Group=="patient"), "CD8pCD28nCD45RAn"])
+mw.test.cd4.naive<-wilcox.test(Con_T1_subset[which(Con_T1_subset$Sample_Group=="control"), "CD4.naive"],Con_T1_subset[which(Con_T1_subset$Sample_Group=="patient"), "CD4.naive"])
+mw.test.cd8.naive<-wilcox.test(Con_T1_subset[which(Con_T1_subset$Sample_Group=="control"), "CD8.naive"],Con_T1_subset[which(Con_T1_subset$Sample_Group=="patient"), "CD8.naive"])
+
+# multiple test correction
+p.vals<-c(mw.test.plasmablast$p.value, mw.test.memory.CD8T$p.value,  mw.test.cd4.naive$p.value, mw.test.cd8.naive$p.value)
+CT1.test.output<-as.matrix(adjusted.pvals.CT1<-p.adjust(p.vals, method="BH"))
+rownames(CT1.test.output)<-c("Plasmablast", "CD8.memory", "CD4.naive", "CD8.naive")
+colnames(CT1.test.output)<-"adjusted.pval"
+CT1.test.output
+
+# T1 vs T2 (paired test)
+tt_subset_predicted_cells<-tt_subset[,c("CD8.naive", "CD4.naive",  "Sample_Group", "Sample_ID")]
+head(tt_subset_predicted_cells)
+head(melted_tt_subset_predicted_cells<-melt(tt_subset_predicted_cells))
+patient.sub<-gsub("patient", "t1", melted_tt_subset_predicted_cells$Sample_Group)
+melted_tt_subset_predicted_cells$Sample_Group<-patient.sub
+colnames(melted_tt_subset_predicted_cells)<-c("Group", "SampleID", "Cell", "Abundance")
+melted_tt_subset_predicted_cells$Group<-as.factor(as.character(melted_tt_subset_predicted_cells$Group))
+ggplot(melted_tt_subset_predicted_cells, aes(Group, Abundance)) + geom_boxplot(aes(fill=Group),color="black", outlier.shape=NA)+ geom_point(shape=21, fill="grey",colour="black", size=2, position=position_jitter(w=0.2))+ scale_fill_manual(values=c("#4393c3", "#92c5de")) + theme_bw() +facet_wrap(~Cell)
+# test difference between groups to see if there is a significant difference in cell type proportion between T1 and T2 patient samples (Wilcoxon signed-rank test)
+# plasma.tt.test<-wilcox.test(t1.dat$PlasmaBlast, t2.dat$PlasmaBlast, paired=TRUE) # p-value = 0.7048 
+# memory.tt.test<-wilcox.test(t1.dat$CD8pCD28nCD45RAn, t2.dat$CD8pCD28nCD45RAn, paired=TRUE) # p-value = 0.5646 
+cd8.naive.tt.test<-wilcox.test(t1.dat$CD8.naive, t2.dat$CD8.naive, paired=TRUE) # p-value = 0.0002052 
+cd4.naive.tt.test<-wilcox.test(t1.dat$CD4.naive, t2.dat$CD4.naive, paired=TRUE) # p-value = 0.0004299 (Wilcoxon signed-rank test)
+p.vals<-c(plasma.tt.test$p.value, memory.tt.test$p.value, cd8.naive.tt.test$p.value, cd4.naive.tt.test$p.value)
+# multiple test correction
+tt.test.output<-as.matrix(adjusted.pvals.tt<-p.adjust(p.vals, method="BH"))
+rownames(tt.test.output)<-c("Plasmablast", "Memory CD8 T-cells", "Naive CD8 T-cells", "Naive CD4 T-cells")
+colnames(tt.test.output)<-"adjusted.pval"
+tt.test.output
+
+# All samples
+all_samples_predicted_cells<-clock.meta[,c("CD8.naive", "CD4.naive",  "Sample_Group", "Sample_ID")]
+head(all_samples_predicted_cells)
+head(melted_all_samples_predicted_cells<-melt(all_samples_predicted_cells))
+patient.sub<-gsub("patient", "t1", melted_all_samples_predicted_cells$Sample_Group)
+melted_all_samples_predicted_cells$Sample_Group<-patient.sub
+colnames(melted_all_samples_predicted_cells)<-c("Group", "SampleID", "Cell", "Abundance")
+melted_all_samples_predicted_cells$Group<-as.factor(as.character(melted_all_samples_predicted_cells$Group))
+ggplot(melted_all_samples_predicted_cells, aes(Group, Abundance)) + geom_boxplot(aes(fill=Group),color="black", outlier.shape=NA)+ geom_point(shape=21, fill="grey",colour="black", size=2, position=position_jitter(w=0.2))+ scale_fill_manual(values=c("#d6604d","#4393c3", "#92c5de")) + theme_bw() +facet_wrap(~Cell) + scale_x_discrete(labels=c("control" = "Control", "t1" = "Patient (T1)", "t2" = "Patient (T2)")) + theme(axis.text.x = element_text(size=10), legend.position = 'none')
+# test difference between groups to see if there is a significant difference in cell type proportion between controls and T2 patient (Mann-Whitney U test)
+mw.test.plasmablast<-wilcox.test(clock.meta[which(clock.meta$Sample_Group=="control"), "PlasmaBlast"],clock.meta[which(clock.meta$Sample_Group=="t2"), "PlasmaBlast"])
+mw.test.memory.CD8T<-wilcox.test(clock.meta[which(clock.meta$Sample_Group=="control"), "CD8pCD28nCD45RAn"],clock.meta[which(clock.meta$Sample_Group=="t2"), "CD8pCD28nCD45RAn"])
+mw.test.cd4.naive<-wilcox.test(clock.meta[which(clock.meta$Sample_Group=="control"), "CD4.naive"],clock.meta[which(clock.meta$Sample_Group=="t2"), "CD4.naive"])
+mw.test.cd8.naive<-wilcox.test(clock.meta[which(clock.meta$Sample_Group=="control"), "CD8.naive"],clock.meta[which(clock.meta$Sample_Group=="t2"), "CD8.naive"])
+
+### Check Houseman blood cell types
+# colnames(tt_subset)
+# tt_subset_predicted_cells<-tt_subset[,c("CD8T","CD4T","NK","Bcell","Mono","Gran","Sample_Group", "Sample_ID")]
+# head(tt_subset_predicted_cells)
+# head(melted_tt_subset_predicted_cells<-melt(tt_subset_predicted_cells))
+# patient.sub<-gsub("patient", "t1", melted_tt_subset_predicted_cells$Sample_Group)
+# melted_tt_subset_predicted_cells$Sample_Group<-patient.sub
+# #memory.sub<-gsub("CD8pCD28nCD45RAn", "CD8.memory", melted_tt_subset_predicted_cells$variable)
+# #melted_tt_subset_predicted_cells$variable<-memory.sub
+# colnames(melted_tt_subset_predicted_cells)<-c("Group", "SampleID", "Cell", "Abundance")
+# ggplot(melted_tt_subset_predicted_cells, aes(Group, Abundance)) + geom_boxplot(aes(fill=as.factor(as.character(Group))),color="black", outlier.shape=NA)+ geom_point(shape=21, fill="grey",colour="black", size=4, position=position_jitter(w=0.2))+ scale_colour_manual(values=c("#66c2a5","#fc8d62")) + theme_bw() +facet_wrap(~Cell)
+```
+
+We observe no differences in CD4 naive, CD8 naive, CD8 memory and plasmablast cells between controls and T1 patient samples. There is no statistically significant difference in CD8 memory and plasmablast cells between T1 and T2 patient samples. However, there is a significant increase in CD8 naive and CD4 naive abundance betweeen T1 and T2 patient samples (adjusted p-value < 0.005).
